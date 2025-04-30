@@ -383,7 +383,7 @@ def download2spec_path(magnet_link, number, actor_name):
             init.logger.error(f"❌离线遇到错误！error_type: {response.get('errtype')}！")
         else:
             init.logger.info(f"✅[{resource_name}]添加离线成功")
-            download_success = init.client_115.check_offline_download_success(magnet_link)
+            download_success = init.client_115.check_offline_download_success(magnet_link, resource_name)
             if download_success:
                 init.logger.info(f"✅[{resource_name}]离线下载完成")
                 if init.client_115.is_directory(f"{init.bot_config['offline_path']}/{resource_name}"):
