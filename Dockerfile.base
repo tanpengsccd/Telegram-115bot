@@ -1,0 +1,15 @@
+FROM python:3.13.0-slim
+LABEL authors="qiqiandfei"
+
+# 安装构建依赖
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
+# 设置工作目录
+WORKDIR /app
+
+ENV PYTHONPATH="/app"
+
+COPY requirements.txt /app/
+
+RUN pip install --upgrade pip && pip install -r requirements.txt

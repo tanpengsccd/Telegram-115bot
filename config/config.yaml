@@ -1,0 +1,81 @@
+############################################Telegram设置##################################
+# bot token
+# 机器人唯一Token，如果没有@BotFather创建
+bot_token: 7788556677:AAH1tq-vW6Mcf3Xdp8VrJfJUwL0nRaq3Ndl
+# 授权可以使用该bot的user_id，可以设置多个
+allowed_user_list:
+  - 1234567890
+  - 0987654321
+#############################################115离线设置###################################
+# 下载完成后自动删除文件夹中的广告文件
+clean_policy:
+  # 是否开启自动清理 on: 开启 off: 关闭
+  # 当设置为off时，所有策略不会生效，默认为开启
+  switch: "on"
+  # 文件小于设置值则自动删除单位K,M,G
+  less_than: 900M
+  # 文件类型，满足配置的文件类型则自动删除
+  file_type:
+    - zip
+    - jpg
+    - html
+    - txt
+    - doc
+
+# 115离线文件夹
+offline_path: /云下载
+
+# 设置分类文件夹
+# 分类文件夹设置只针对离线任务，离线下载完成后，会弹出需要移动到的分类文件夹，可以设置多个
+# "name"为分类目录设置别名，"path" 115上的完整路径
+category_folder:
+  # 电影下的分类目录
+  - name: movies
+    display_name: 电影
+    path_map:
+      - name: 外语电影
+        path: /影视/电影/外语电影
+      - name: 华语电影
+        path: /影视/电影/华语电影
+      - name: 动画电影
+        path: /影视/电影/动画电影
+  # AV
+  - name: av
+    display_name: AV
+    path_map:
+      - name: 码の谜
+        path: /AV/有码
+      - name: 祼の真
+        path: /AV/无码
+
+# 会自动订阅JavDB上没有磁力的影片
+# 关联定时任务：
+# 1、凌晨1：00更新订阅女优是否有新的未上映影片
+# 2、凌晨3：00查询当前已订阅影片是否更新磁力
+subscribe:
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+  javdb_cookie: "list_mode=h; theme=auto; over18=1; _ym_uid=1732717712665446899; _ym_d=1732717712; remember_me_token=eyJfcmFpbHMiOnsibWVzc2FnZSI6IklqWklOMFpvYmxkNFZYTk1TMjFLYmpsbmVIcHBJZz09IiwiZXhwIjoiMjAyNC0xMi0wNVQxNDo1Njo1OC4wMDBaIiwicHVyIjoiY29va2llLnJlbWVtYmVyX21lX3Rva2VuIn19--05e853a283c709fb060cbedac0d57dad5ddde1a0; locale=zh; hide_app_banner=1; _ym_isad=1; cf_clearance=YSC7HcUjlyD78b0RVe1EU7p0BRmSZZPIZ2wJVCk9U60-1732982831-1.2.1.1-1DE8MyiMSDO1QeVcYSPA8WSwCaACDefnIRI8zxvgxqw4yQUvxvGau8JTB1hV5LcvZ4J_XMCJK3ly1W5mNfE7euhW.wpr0F.cD9SYO8HLdoWvQFV1qdgR7XHXh4hQrbgWNffTe8BlBNSQQwUXc1NvOaJHJzj922t0jJozpJuW_DZS_pl43b4flCjOTTuQoEnUFAf0EfUwpZ8rRzPx4QDaviYpRG5QZeWpTyaQXcZjBcec_KyKsCFEBzAdGwu4GZ8sgCa6zFD59U.ihx.J6vxolgyWvC_.Au0vo7uJwl1ECGuD4qNme.XyN23D_I7Q5ycNh3ZnP92C1oXcw2WnjraOquExopjGTeJ1RBAUot0poFk3pdhFnbgxFgWENDrUuIVuaECuRNmvYgd63nMTO0K3Cg; _jdb_session=tMFQvLokh5g5rfSjaRubuheRetkDKULkF3ZoZfbsyd9EhgepULZj6ayDL%2FqZ%2FTCt%2Bg6n%2B1zg8i0ZzyI68L9KYpKqj1JDH9D%2B%2BClWLwf2K1ExgdJQ%2FeiGX3aq%2F%2FzP%2B04TwxPiitt44cvq8wJb%2BTgmiQptXmg5%2FeO1mw9jW48Zzc4q2L8nx7HVBTQGBLq54z0jctxmAhrHy6aNmJJppLsWPxIAbu6sXXLhhvgbt8gTsa4VuRGlIjMrSHpOibimozVUehWc4MVkwzjVk%2B%2Bm%2BP%2FoB3XdUsq4GRtc%2F72Z6kqurF%2Bz8SwVcj%2BFn6Olm%2BU8tm%2FQ5m3LuOdg5QvReQ1jZSJhdofxGWSA5Q%2FOhJ8h0Uu7ILl%2BUoeyzeyuX1ls4ggufm7YcUA%3D--yoXmKKdIcFxDD3FZ--%2BFXsja4903AhWi2YlKO%2BxQ%3D%3D"
+  # 115的实际保存目录，订阅会在指定路径自动创建以演员命名的文件夹方便分类
+  path: /AV/女优
+  # 订阅权重 设置高清，字幕的分数，订阅时会自动订阅得分最高的磁力
+  sub_weight:
+    # 高清
+    hd: 5
+    # 字幕
+    subtitle_zh: 3
+
+#############################################软链接设置####################################
+# strm可以极大地减小请求115的次数避免风控，建议开启
+# 是否创建软链（非302）
+create_strm: False
+# CloudDrive2 挂载115的根目录
+mount_root: /CloudNAS/115
+# 软链接根目录，软链接目录可以看成是115挂载目录的镜像，也是Emby设置媒体库的目录，需要挂载到容器
+strm_root: /media/115
+
+#############################################EMBY设置####################################
+# 有新资源入库时会同时Emby扫库，所有媒体库建议按加入日期到排序
+# EmbyServer地址 格式 http(s)://ip(域名):端口
+emby_server: http://192.168.1.100:8096
+# Emby APIkey  Emby-->API秘钥-->新建
+api_key: 803e5l52v73649022m04by91d9301af2
