@@ -153,7 +153,8 @@ ChenyangGao/web-mount-packs/python-115-client
 - `/cookie`  - 设置 115 Cookie
 - `/dl`      - 添加离线下载
 - `/sync`    - 同步目录并创建软链（会删除当前目录下所有文件，大规模同步可能导致风控，慎用！）
-- `/sub`     - AV 女优订阅
+- `/sm`      - 订阅电影
+- `/sub`     - 女优订阅
 - `/q`       - 取消当前会话
 
 ### 注意事项
