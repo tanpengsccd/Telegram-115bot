@@ -1,20 +1,7 @@
 # -*- coding: utf-8 -*-
-"""
-  _________        .__                          __   
- /   _____/______  |__|_______   ____    ____ _/  |_ 
- \_____  \ \____ \ |  |\_  __ \_/ __ \  /    \\   __\
- /        \|  |_> >|  | |  | \/\  ___/ |   |  \|  |  
-/_______  /|   __/ |__| |__|    \___  >|___|  /|__|  
-        \/ |__|                     \/      \/          
- * Create by: yu fei
- * Date: 2024/10/25
- * Time: 14:08
- * Name: 
- * Purpose: 
- * Copyright © 2024年 Fei. All rights reserved.
-"""
+
 import json
-from subscribe import add_task_to_queue, queue_worker
+from message_queue import add_task_to_queue, queue_worker
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler, Application
 import init
@@ -26,12 +13,13 @@ from sync_handler import register_sync_handlers
 from video_handler import register_video_handlers
 from subscribe_handler import register_subscribe_handlers
 from scheduler import start_scheduler_in_thread
+from subscribe_movie_handler import register_subscribe_movie_handlers
 
 
 def get_version(md_format=False):
     if md_format:
-        return "v2\.2"
-    return "v2.2"
+        return r"v2\.3\.0"
+    return "v2.3.0"
 
 def get_help_info():
     version = get_version()
@@ -42,14 +30,16 @@ def get_help_info():
             /cookie   - 设置115Cookie  
             /dl       - 添加离线下载
             /sync     - 同步目录，并创建软链
-            /sub      - AV女优订阅
+            /sm       - 订阅电影
+            /sub      - 女优订阅
             /q        - 取消当前会话  
             
             <b>功能说明:</b>  
             - '/dl 下载链接' 即可添加离线下载，支持磁力、115分享、迅雷、ed2k、FTP、HTTPS等格式。  
             - 当发送视频文件时，机器人会将视频文件保存到115。
             - 同步目录会自动创建strm文件到本地的软链根目录(对应配置文件中的strm_root), 每次同步会清空对应的strm目录。如同步目录下文件较多，耗时会比较长，请耐心等待。
-            - 订阅功能目前只支持女优订阅，输入女优名称，当有新作品时自动下载到指定目录并添加软链。
+            - 订阅功能支持电影名称订阅，输入电影名称，当有资源更新时自动下载到指定目录并添加软链。
+            - 订阅功能支持女优订阅，输入女优名称，当有新作品时自动下载到指定目录并添加软链。
             
             <b>提示：</b>
             在使用115相关功能前，请先设置115Cookie！
@@ -81,13 +71,24 @@ def send_start_message():
     for item in init.bot_config['allowed_user_list']:
         if not init.initialize_115client():
             cookie_health = "检测到115Cookie已过期，请重新设置！"
-        add_task_to_queue(item, "/app/images/neuter010.png", f"115 Bot {version} 启动成功！\[{cookie_health}\] *发送 `/start` 查看操作说明。*")
+        add_task_to_queue(item, "/app/images/neuter010.png", fr"115 Bot {version} 启动成功！\[{cookie_health}\] *发送 `/start` 查看操作说明。*")
+        
+
+def update_logger_level():
+    import logging
+    logging.getLogger('httpx').setLevel(logging.WARNING)
+    logging.getLogger('telegram').setLevel(logging.WARNING)
+    logging.getLogger('telegram.ext.Application').setLevel(logging.WARNING)
+    logging.getLogger('telegram.ext.Updater').setLevel(logging.WARNING)
+    logging.getLogger('telegram.Bot').setLevel(logging.WARNING)
 
 
 if __name__ == '__main__':
     init.init()
     init.logger.info("Starting bot with configuration:")
     init.logger.info(json.dumps(init.bot_config))
+    # 调整telegram日志级别
+    update_logger_level()
     token = init.bot_config['bot_token']
     application = Application.builder().token(token).build()
 
@@ -104,6 +105,8 @@ if __name__ == '__main__':
     register_video_handlers(application)
     # 注册订阅
     register_subscribe_handlers(application)
+    # 注册电影订阅
+    register_subscribe_movie_handlers(application)
 
     # 启动机器人轮询
     try:

@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CommandHandler, ConversationHandler, \
     MessageHandler, filters, CallbackQueryHandler
@@ -147,6 +149,8 @@ async def select_sub_category(update: Update, context: ContextTypes.DEFAULT_TYPE
                 # 重命名文件
                 return SPECIFY_NAME
             else:
+                # 下载超时删除任务
+                init.client_115.clear_failed_task(link, resource_name)
                 await context.bot.send_message(chat_id=update.effective_chat.id,
                                             text=f"`{resource_name}`  \n😭离线下载超时，建议更换链接重试~",
                                             parse_mode='MarkdownV2')
@@ -163,6 +167,7 @@ async def select_sub_category(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def specify_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     resource_name = update.message.text
+    download_url = context.user_data["link"]
     selected_path = context.user_data["selected_path"]
     old_name = context.user_data["old_name"]
     new_name = f"{selected_path}/{resource_name}"
@@ -171,8 +176,7 @@ async def specify_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     file_list = init.client_115.get_files_from_dir(new_name)
     init.logger.info(file_list)
     # 创建软链
-    if init.bot_config['create_strm']:
-        create_strm_file(new_name, file_list)
+    create_strm_file(new_name, file_list)
 
     # 发送削刮图片, 如果有的话...
     cover_url = ""
@@ -192,6 +196,16 @@ async def specify_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
             init.logger.warn(f"Telegram API error: {e}")
         except Exception as e:
             init.logger.warn(f"Unexpected error: {e}")
+            
+    # 如果已经订阅过
+    from subscribe_movie import is_subscribe, update_subscribe
+    if is_subscribe(resource_name):
+        # 更新订阅信息
+        update_subscribe(resource_name, cover_url, download_url)
+        await context.bot.send_message(chat_id=update.effective_chat.id,
+                                   text=f"💡订阅影片`{resource_name}`已手动下载!",
+                                   parse_mode='MarkdownV2')
+        
 
     # 通知Emby扫库
     notice_emby_scan_library()
@@ -202,7 +216,11 @@ async def specify_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def quit_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚪用户退出本次会话.")
+    # 检查是否是回调查询
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text="🚪用户退出本次会话.")
+    else:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="🚪用户退出本次会话.")
     return ConversationHandler.END
 
 
@@ -236,6 +254,9 @@ def is_valid_link(link: str) -> DownloadUrlType:
 
 
 def create_strm_file(new_name, file_list):
+    # 检查是否需要创建软链
+    if not init.bot_config['create_strm']:
+        return
     try:
         init.logger.debug(f"Original new_name: {new_name}")
 

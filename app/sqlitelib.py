@@ -1,20 +1,6 @@
 # -*- coding: utf-8 -*-
-"""
-  _________        .__                          __   
- /   _____/______  |__|_______   ____    ____ _/  |_ 
- \_____  \ \____ \ |  |\_  __ \_/ __ \  /    \\   __\
- /        \|  |_> >|  | |  | \/\  ___/ |   |  \|  |  
-/_______  /|   __/ |__| |__|    \___  >|___|  /|__|  
-        \/ |__|                     \/      \/          
- * Create by: yu fei
- * Date: 08/07/2023
- * Time: 17:26
- * Name: 
- * Purpose: 
- * Copyright © 2023年 Fei. All rights reserved.
-"""
+
 import sqlite3
-import os
 import init
 from typing import Optional
 
@@ -54,6 +40,14 @@ class SqlLiteLib:
             self.cursor.execute(sql, params or ())
             res = self.cursor.fetchone()
             return res[0] if res else None
+        except Exception as e:
+            self.logger.error(f"执行查询时发生错误: {e}, sql: {sql}")
+            
+    def query_row(self, sql: str, params=None):
+        try:
+            self.cursor.execute(sql, params or ())
+            res = self.cursor.fetchone()
+            return res if res else None
         except Exception as e:
             self.logger.error(f"执行查询时发生错误: {e}, sql: {sql}")
 

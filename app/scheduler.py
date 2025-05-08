@@ -1,24 +1,12 @@
 # -*- coding: utf-8 -*-
-"""
-  _________        .__                          __   
- /   _____/______  |__|_______   ____    ____ _/  |_ 
- \_____  \ \____ \ |  |\_  __ \_/ __ \  /    \\   __\
- /        \|  |_> >|  | |  | \/\  ___/ |   |  \|  |  
-/_______  /|   __/ |__| |__|    \___  >|___|  /|__|  
-        \/ |__|                     \/      \/          
- * Create by: yu fei
- * Date: 2024/10/25
- * Time: 14:08
- * Name: 
- * Purpose: 
- * Copyright © 2024年 Fei. All rights reserved.
-"""
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 import init
 import threading
-from subscribe import add_task_to_queue, schedule_actor, schedule_number
+from message_queue import add_task_to_queue
+from subscribe import schedule_actor, schedule_number
+from subscribe_movie import schedule_movie
 from apscheduler.triggers.interval import IntervalTrigger
 
 scheduler = BlockingScheduler()
@@ -36,13 +24,14 @@ def check_cookie():
 tasks = [
     {"id": "actor_task", "func": schedule_actor, "hour": 1, "minute": 0},
     {"id": "number_task", "func": schedule_number, "hour": 3, "minute": 0},
-    {"id": "interval_task", "func": check_cookie, "interval": 4 * 60 * 60},
+    {"id": "cookie_check_task", "func": check_cookie, "interval": 4 * 60 * 60},
+    {"id": "subscribe_movie_task", "func": schedule_movie, "interval": 4 * 60 * 60},
 ]
 
 def subscribe_scheduler():
     for task in tasks:
         if not scheduler.get_job(task["id"]):
-            if "interval" in task:
+            if "cookie_check" in task["id"] or "subscribe_movie" in task["id"]:
                 scheduler.add_job(
                     task["func"],
                     IntervalTrigger(seconds=task["interval"]),

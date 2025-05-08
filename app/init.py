@@ -1,18 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
-  _________        .__                          __   
- /   _____/______  |__|_______   ____    ____ _/  |_ 
- \_____  \ \____ \ |  |\_  __ \_/ __ \  /    \\   __\
- /        \|  |_> >|  | |  | \/\  ___/ |   |  \|  |  
-/_______  /|   __/ |__| |__|    \___  >|___|  /|__|  
-        \/ |__|                     \/      \/          
- * Create by: yu fei
- * Date: 2024/10/28
- * Time: 11:07
- * Name: 
- * Purpose: 
- * Copyright © 2024年 Fei. All rights reserved.
-"""
+
 import os
 import yaml
 from logger import Logger
@@ -129,7 +116,7 @@ def init_db():
             pub_date DATETIME, -- 发布时间
             title TEXT, -- 标题
             post_url TEXT, -- 封面URL
-            is_download TINYINT DEFAULT 0, -- 是否下载，0或1，默认0
+            is_download TINYINT DEFAULT 0, -- 是否下载, 0或1, 默认0
             score REAL,
             magnet TEXT,
             sub_user INTEGER,
@@ -148,8 +135,23 @@ def init_db():
         );
         '''
         sqlite.execute_sql(create_table_query)
+        create_table_query = '''
+        CREATE TABLE IF NOT EXISTS sub_movie (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            movie_name TEXT, -- 电影名称
+            tmdb_id INTEGER, -- TMDB ID
+            size TEXT, -- 文件大小
+            category_folder TEXT, -- 分类文件夹
+            is_download TINYINT DEFAULT 0, -- 是否下载, 0或1, 默认0
+            download_url TEXT,  -- 下载链接, magnet, ed2k, 115share
+            sub_user INTEGER,
+            post_url TEXT, -- 封面URL
+            is_delete TINYINT DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP -- 创建时间，默认当前时间
+        );
+        '''
+        sqlite.execute_sql(create_table_query)
         logger.info("init DataBase success.")
-        
 
 def init_log():
     create_logger()

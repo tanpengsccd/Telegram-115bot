@@ -1,18 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
-  _________        .__                          __   
- /   _____/______  |__|_______   ____    ____ _/  |_ 
- \_____  \ \____ \ |  |\_  __ \_/ __ \  /    \\   __\
- /        \|  |_> >|  | |  | \/\  ___/ |   |  \|  |  
-/_______  /|   __/ |__| |__|    \___  >|___|  /|__|  
-        \/ |__|                     \/      \/          
- * Create by: yu fei
- * Date: 11/29/2022
- * Time: 16:18
- * Name: 
- * Purpose: 
- * Copyright © 2022年 Fei. All rights reserved.
-"""
+
 import requests
 from bs4 import BeautifulSoup
 

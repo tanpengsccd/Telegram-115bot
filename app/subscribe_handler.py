@@ -1,4 +1,5 @@
-import json
+# -*- coding: utf-8 -*-
+
 import re
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes, ConversationHandler
@@ -29,10 +30,10 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("浏览订阅", callback_data="view_subscribe")],
         [InlineKeyboardButton("删除订阅", callback_data="del_subscribe")],
         [InlineKeyboardButton("清空订阅", callback_data="clear_subscribe")],
-        [InlineKeyboardButton("退出", callback_data="quite")],
+        [InlineKeyboardButton("退出", callback_data="quit")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="❓请选择要订阅的女优：", reply_markup=reply_markup)
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="❤️女优订阅：", reply_markup=reply_markup)
     return SUBSCRIBE_OPERATE
 
 
@@ -67,8 +68,10 @@ async def subscribe_operate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=update.effective_chat.id, text="✅订阅列表已清空")
         return SUBSCRIBE_OPERATE
     
-    if operate == "quite":
-        await quit_conversation(update, context)
+    if operate == "quit":
+        return await quit_conversation(update, context)
+    
+    return SUBSCRIBE_OPERATE
 
 
 async def add_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -119,7 +122,11 @@ async def del_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def quit_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="🚪用户退出本次会话.")
+    # 检查是否是回调查询
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text="🚪用户退出本次会话.")
+    else:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="🚪用户退出本次会话.")
     return ConversationHandler.END
 
 

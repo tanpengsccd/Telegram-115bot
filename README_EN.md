@@ -5,6 +5,14 @@
 
 A Python-based Telegram bot for managing and controlling 115 Network Disk, supporting offline downloads, video uploads, directory synchronization, and more.
 
+## Update Log
+v2.3.0
+- Added movie subscription feature
+- Fixed various bugs
+
+v2.2.0
+- Fixed various bugs
+
 ## Upstream Project
 This project is based on the following project:
 
@@ -25,7 +33,6 @@ When you return home after work, just prepare some snacks and drinks, open Emby,
 ## Known Issues
 - Limited support for TV series. Downloading series directly may cause unexpected issues
 - Directory synchronization will clear the entire folder, including metadata (quite aggressive)
-- Currently unable to implement automatic series following or movie subscription (lacking a directly crawlable resource site)
 
 If you'd like to help improve this project, welcome to [join](https://t.me/qiqiandfei)!
 
@@ -51,7 +58,7 @@ If you'd like to help improve this project, welcome to [join](https://t.me/qiqia
 
 - 📡 **Subscription Features**
   - AV actress subscription
-  - Automatic latest work download
+  - Movie subscription
   - Custom storage path
 
 ## Quick Start
@@ -66,7 +73,7 @@ If you'd like to help improve this project, welcome to [join](https://t.me/qiqia
 
 1. **Clone Project**
    ```bash
-   git clone [project-url]
+   git clone https://github.com/qiqiandfei/Telegram-115bot.git
    cd 115bot
    ```
 
@@ -83,7 +90,26 @@ If you'd like to help improve this project, welcome to [join](https://t.me/qiqia
 
 3. **Docker Deployment**
 
-   Option 1: Using docker-compose (recommended)
+   **Local**
+   ```bash
+   # Build base image
+   docker build -t 115bot:base -f Dockerfile.base .
+   
+   # Build application image
+   docker build -t 115bot:latest .
+   
+   # Run container
+   docker run -d \
+     --name tg-bot-115 \
+     --restart unless-stopped \
+     -e TZ=Asia/Shanghai \
+     -v $PWD/config:/config \
+     -v /path/to/media:/media \
+     -v /path/to/CloudNAS:/CloudNAS:rslave \
+     115bot:latest
+   ```
+   
+   **Compose (recommended)**
    ```yaml
    # docker-compose.yaml
    version: '3.8'
@@ -93,23 +119,12 @@ If you'd like to help improve this project, welcome to [join](https://t.me/qiqia
        environment:
          TZ: Asia/Shanghai
        image: qiqiandfei/115-bot:latest
+       # privileged: True
        restart: unless-stopped
        volumes:
          - $PWD/config:/config
-         - /path/to/media:/media
-         - /path/to/CloudNAS:/CloudNAS:rslave
-   ```
-
-   Option 2: Using docker command
-   ```bash
-   docker run -d \
-     --name tg-bot-115 \
-     --restart unless-stopped \
-     -e TZ=Asia/Shanghai \
-     -v $PWD/config:/config \
-     -v /path/to/media:/media \
-     -v /path/to/CloudNAS:/CloudNAS:rslave \
-     qiqiandfei/115-bot:latest
+         - /path/to/media:/media # Emby media library directory (symlink directory)
+         - /path/to/CloudNAS:/CloudNAS:rslave # CloudDrive2 mount directory
    ```
 
 ## Configuration
@@ -139,6 +154,7 @@ Please refer to the comments in `config/config.yaml.example` for configuration d
 - `/cookie`  - Set 115 Cookie
 - `/dl`      - Add offline download
 - `/sync`    - Sync directory and create symlinks (will delete all files in current directory, use with caution!)
+- `/sm`      - Subscribe to movies
 - `/sub`     - AV actress subscription
 - `/q`       - Cancel current session
 
@@ -147,7 +163,7 @@ Please refer to the comments in `config/config.yaml.example` for configuration d
 1. First-time use requires setting up 115 Cookie [Get 115 cookie](https://greasyfork.org/zh-CN/scripts/474231-115%E4%B8%8D%E5%A4%A7%E5%8A%A9%E6%89%8B-full)
 2. Offline download supports multiple formats, just send the link directly
 3. Directory sync will clear the corresponding STRM directory
-4. Subscription feature will automatically create folders named after actresses
+4. Subscription feature will automatically create folders named after actresses or movies
 
 ## License
 ```

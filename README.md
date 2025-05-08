@@ -5,6 +5,14 @@
 
 一个基于 Python 的 Telegram 机器人，用于管理和控制 115 网盘，支持离线下载、视频上传、目录同步等功能。
 
+## 更新日志
+v2.3.0
+- 增加电影订阅功能
+- 修复了部分bug
+
+v2.2.0
+- 修复了部分bug
+
 ## 上游项目
 本项目基于以下项目开发，特此鸣谢
 
@@ -25,7 +33,6 @@ ChenyangGao/web-mount-packs/python-115-client
 ## 已知缺陷
 - 目前对剧集的支持度非常有限，如果直接离线剧集资源可能会发生意想不到的问题
 - 同步目录会清空整个文件夹，包括元数据，相当粗暴
-- 暂时无法实现自动追剧，订阅电影等（缺一个可以直接爬取的资源站）
 
 如果你乐意帮助改进这个项目欢迎[加入](https://t.me/qiqiandfei)！
 
@@ -50,8 +57,8 @@ ChenyangGao/web-mount-packs/python-115-client
   - 视频文件自动上传至 115 (会消耗机场/VPS流量，慎用)
 
 - 📡 **订阅功能**
-  - AV 女优订阅
-  - 自动下载最新作
+  - AV女优订阅
+  - 电影订阅
   - 自定义存储路径
 
 ## 快速开始
@@ -66,7 +73,7 @@ ChenyangGao/web-mount-packs/python-115-client
 
 1. **克隆项目**
    ```bash
-   git clone [项目地址]
+   git clone https://github.com/qiqiandfei/Telegram-115bot.git
    cd 115bot
    ```
 
@@ -78,7 +85,7 @@ ChenyangGao/web-mount-packs/python-115-client
    - 编辑 `config.yaml`，填入必要配置：
      - Telegram Bot Token
      - 授权用户列表
-     - 115 网盘配置
+     - 115网盘配置
      - 目录映射设置
 
 3. **Docker部署**
@@ -114,9 +121,9 @@ ChenyangGao/web-mount-packs/python-115-client
       # privileged: True
       restart: unless-stopped
       volumes:
-        - $PWD/config/config:/config
-        - /path/to/media:/media
-        - /path/to/CloudNAS:/CloudNAS:rslave
+        - $PWD/config:/config
+        - /path/to/media:/media # Emby媒体库目录（软链目录）
+        - /path/to/CloudNAS:/CloudNAS:rslave # CloudDrive2挂载目录
    ```
 
 ## 配置说明

@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CommandHandler, ConversationHandler, CallbackQueryHandler
 import init
@@ -26,6 +28,8 @@ async def sync_strm_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton(category["display_name"], callback_data=category["name"])] for category in
         init.bot_config['category_folder']
     ]
+    # 添加退出按钮
+    keyboard.append([InlineKeyboardButton("退出", callback_data="quit")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     await context.bot.send_message(chat_id=update.effective_chat.id, text="❓请选择要同步的分类：",
                                    reply_markup=reply_markup)
@@ -43,11 +47,15 @@ async def select_main_category_sync(update: Update, context: ContextTypes.DEFAUL
             [InlineKeyboardButton(category["display_name"], callback_data=category["name"])]
             for category in init.bot_config['category_folder']
         ]
+        keyboard.append([InlineKeyboardButton("退出", callback_data="quit")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         await context.bot.send_message(chat_id=update.effective_chat.id,
                                        text="❓请选择要同步的分类：",
                                        reply_markup=reply_markup)
         return SELECT_MAIN_CATEGORY_SYNC
+    elif selected_main_category == "quit":
+        # 直接退出会话
+        return await quit_conversation(update, context)
     else:
         context.user_data["selected_main_category"] = selected_main_category
         sub_categories = [
@@ -59,6 +67,7 @@ async def select_main_category_sync(update: Update, context: ContextTypes.DEFAUL
             [InlineKeyboardButton(category["name"], callback_data=category["path"])] for category in sub_categories
         ]
         keyboard.append([InlineKeyboardButton("返回", callback_data="return")])
+        keyboard.append([InlineKeyboardButton("退出", callback_data="quit")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text("❓请选择要同步的目录：", reply_markup=reply_markup)
         return SELECT_SUB_CATEGORY_SYNC
@@ -71,6 +80,8 @@ async def select_sub_category_sync(update: Update, context: ContextTypes.DEFAULT
     selected_path = query.data
     if selected_path == "return":
         return await select_main_category_sync(update, context)
+    if selected_path == "quit":
+        return await quit_conversation(update, context)
     mount_root = Path(init.bot_config['mount_root'])
     strm_root = Path(init.bot_config['strm_root'])
     init.logger.debug(f"selected_path: {selected_path}")
@@ -104,7 +115,11 @@ async def select_sub_category_sync(update: Update, context: ContextTypes.DEFAULT
     
 
 async def quit_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚪用户退出本次会话.")
+    # 检查是否是回调查询
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text="🚪用户退出本次会话.")
+    else:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="🚪用户退出本次会话.")
     return ConversationHandler.END
 
 

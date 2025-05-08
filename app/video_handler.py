@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CommandHandler, ConversationHandler, \
     MessageHandler, filters, CallbackQueryHandler
@@ -46,6 +48,7 @@ async def select_main_category_video(update: Update, context: ContextTypes.DEFAU
             [InlineKeyboardButton(category["display_name"], callback_data=category["name"])]
             for category in init.bot_config['category_folder']
         ]
+        keyboard.append([InlineKeyboardButton("退出", callback_data="quit")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         await context.bot.send_message(chat_id=update.effective_chat.id,
                                     text="❓请选择要保存到哪个分类：",
@@ -74,6 +77,8 @@ async def select_sub_category_video(update: Update, context: ContextTypes.DEFAUL
     selected_path = query.data
     if selected_path == "return":
         return await select_main_category_video(update, context)
+    if selected_path == "quit":
+        return await quit_conversation(update, context)
     video = context.user_data["video"]
     # 获取视频的 file_id 和文件名
     file_id = video.file_id
@@ -114,7 +119,11 @@ async def select_sub_category_video(update: Update, context: ContextTypes.DEFAUL
 
 
 async def quit_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚪用户退出本次会话.")
+    # 检查是否是回调查询
+    if update.callback_query:
+        await update.callback_query.edit_message_text(text="🚪用户退出本次会话.")
+    else:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="🚪用户退出本次会话.")
     return ConversationHandler.END
 
 

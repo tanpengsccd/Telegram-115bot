@@ -67,7 +67,7 @@ subscribe:
 #############################################软链接设置####################################
 # strm可以极大地减小请求115的次数避免风控，建议开启
 # 是否创建软链（非302）
-create_strm: False
+create_strm: True
 # CloudDrive2 挂载115的根目录
 mount_root: /CloudNAS/115
 # 软链接根目录，软链接目录可以看成是115挂载目录的镜像，也是Emby设置媒体库的目录，需要挂载到容器
@@ -79,3 +79,22 @@ strm_root: /media/115
 emby_server: http://192.168.1.100:8096
 # Emby APIkey  Emby-->API秘钥-->新建
 api_key: 803e5l52v73649022m04by91d9301af2
+
+#############################################电影订阅####################################
+# 自动订阅https://nullbr.online/上的资源，有满足要求的自动离线到115
+# 自动订阅需要申请app_id，参考申请方法
+# https://nullbr.online/api?title=00.%F0%9F%93%A3api%E5%BC%80%E6%94%BE%E8%AE%A1%E5%88%92
+x_app_id: xgwzQV8NQ
+x_api_key: uPNw4LFG6SaAwX4jvkERKmcYedJgjwVO
+# 订阅条件，全部满足才订阅
+sub_condition:
+  # 包含中字
+  zh_cn: true
+  # Dolby Vision
+  dolby_vision: false
+  # 分辨率优先级
+  resolution_priority:
+    - 2106
+    - 1080
+  
+

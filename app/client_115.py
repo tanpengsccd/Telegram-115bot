@@ -1,18 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
-  _________        .__                          __   
- /   _____/______  |__|_______   ____    ____ _/  |_ 
- \_____  \ \____ \ |  |\_  __ \_/ __ \  /    \\   __\
- /        \|  |_> >|  | |  | \/\  ___/ |   |  \|  |  
-/_______  /|   __/ |__| |__|    \___  >|___|  /|__|  
-        \/ |__|                     \/      \/          
- * Create by: yu fei
- * Date: 2024/10/25
- * Time: 15:45
- * Name: 
- * Purpose: 
- * Copyright © 2024年 Fei. All rights reserved.
-"""
+
 import os
 import time
 from pathlib import Path
@@ -92,13 +79,35 @@ class Client_115:
             tasks = offline_list['tasks']
             for task in tasks:
                 if task['url'] == url and task['percentDone'] == 100:
-                    self.logger.warn(f"[{resource_name}]离线下载完成!")
-                    download_success = True
-                    return download_success
+                        self.logger.info(f"[{resource_name}]离线下载完成!")
+                        download_success = True
+                        return download_success
             time.sleep(10)
             time_out += 10
         self.logger.warn(f"[{resource_name}]离线下载超时!")
         return download_success
+    
+    
+    def clear_failed_task(self, url, resource_name):
+        offline_list = self.client.offline_list()
+        tasks = offline_list['tasks']
+        try:
+            for task in tasks:
+                if task['url'] == url:
+                    info_hash = task['info_hash']
+                    self.logger.info(f"正在删除超时/失败的离线任务 (ID: {resource_name})，同时删除源文件...")
+                    response = self.client.offline_remove({
+                        "hash[0]": info_hash,
+                        "flag": 1
+                    })
+                    if response.get('state', False):
+                        self.logger.info(f"成功删除离线任务 (ID: {resource_name}) 及其源文件")
+                    else:
+                        self.logger.warn(f"删除离线任务失败: {response}")
+                    break
+        
+        except Exception as e:
+            self.logger.error(f"清理离线任务时出错: {str(e)}")
 
     def get_offline_resource_name(self, url):
         offline_list = self.client.offline_list()
@@ -314,5 +323,4 @@ class Client_115:
 if __name__ == '__main__':
     init.init_log()
     client = Client_115()
-    result = client.save_shared_link("/云下载", "https://115cdn.com/s/swh94e73nt4?password=e620&#")
-    print("Save result:", result)
+    client.clear_failed_task("magnet:?xt=urn:btih:26409e9977d1d8b763fa9a3c9f0e3a9b7fa4e080&dn=[javdb.com]IDBD-958-C 禁欲の果て、汗と絶頂汁まみれで交わりまくった3日間8時間BEST")
