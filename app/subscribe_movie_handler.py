@@ -247,10 +247,16 @@ def add_subscribe_movie(movie_name, tmdb_id, sub_user, category_folder):
 
 def get_is_delete_or_download(tmdb_id):
     with SqlLiteLib() as sqlite:
-        sql = f"select is_delete, is_download from sub_movie where tmdb_id=?"
+        sql = "select movie_name from sub_movie where tmdb_id=?"
         params = (tmdb_id,)
-        is_delete, is_download = sqlite.query_row(sql, params)
-        return is_delete, is_download
+        movie_name = sqlite.query_one(sql, params)
+        if movie_name:
+            sql = "select is_delete, is_download from sub_movie where tmdb_id=?"
+            params = (tmdb_id,)
+            is_delete, is_download = sqlite.query_row(sql, params)
+            return is_delete, is_download
+        else:
+            return None, None      
     
 def get_category_folder(tmdb_id):
     with SqlLiteLib() as sqlite:
