@@ -177,6 +177,3 @@ in the Software without restriction, including without limitation the rights
 to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 copies of the Software...
 ```
-
-## Buy me a coffee~
-![Buy me a coffee](https://alist.qiqiandfei.fun:8843/d/Syncthing/yufei/%E4%B8%AA%E4%BA%BA/%E5%BE%AE%E4%BF%A1%E6%89%93%E8%B5%8Fqrcode.png)

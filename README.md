@@ -179,4 +179,4 @@ copies of the Software...
 ```
 
 ## Buy me a coffee~
-![请我喝咖啡](https://alist.qiqiandfei.fun:8843/d/Syncthing/yufei/%E4%B8%AA%E4%BA%BA/%E5%BE%AE%E4%BF%A1%E6%89%93%E8%B5%8Fqrcode.png)
+![请我喝咖啡](https://alist.qiqiandfei.fun:8843/d/Syncthing/yufei/%E4%B8%AA%E4%BA%BA/%E8%B5%9E%E8%B5%8F.png)

@@ -159,8 +159,8 @@ def get_magnet_by_number(number):
             href = item_div.find('a', class_='box').get('href')
             # 更新发布url
             update_pub_url(number, f"{base_url}{href}")
-            magnet_link = crawl_magnet(f"{base_url}{href}")
-            return magnet_link
+            magnet_link_list = crawl_magnet(f"{base_url}{href}")
+            return magnet_link_list
 
 
 def crawl_magnet(url):
@@ -174,7 +174,7 @@ def crawl_magnet(url):
         init.logger.warn(f"Failed to fetch data for number")
         return ""
     
-    selected_magnet_link = ""
+    magnet_link_list = []
     high_score = 0.0
 
     soup = BeautifulSoup(response.text, features="html.parser")
@@ -194,9 +194,10 @@ def crawl_magnet(url):
         date_div = item_column_odd.find('div', class_='date')
         date = date_div.find('span', class_='time').text
         score += calculate_score(date)
-        if score > high_score:
-            high_score = score
-            selected_magnet_link = magnet_link
+        # if score > high_score:
+        #     high_score = score
+        #     selected_magnet_link = magnet_link
+        magnet_link_list.append({"score": score, "magent_link": magnet_link})
 
     item_columns = magnet_div.findAll('div', class_='item columns is-desktop')
     for item_column in item_columns:
@@ -212,11 +213,13 @@ def crawl_magnet(url):
         date_div = item_column.find('div', class_='date')
         date = date_div.find('span', class_='time').text
         score += calculate_score(date)
-        if score > high_score:
-            high_score = score
-            selected_magnet_link = magnet_link
-
-    return selected_magnet_link
+        # if score > high_score:
+        #     high_score = score
+        #     selected_magnet_link = magnet_link
+        magnet_link_list.append({"score": score, "magent_link": magnet_link})
+    # 按评级从高到低排序
+    sorted_res_list = sorted(magnet_link_list, key=lambda x: x['score'], reverse=True)
+    return sorted_res_list
 
 
 def days_since(date_str):
@@ -249,34 +252,28 @@ def schedule_number():
     with SqlLiteLib() as sqlite:
         try:
             # 查询需要处理的数据
-            query = "SELECT number, actor_name, magnet FROM subscribe WHERE is_download = 0"
+            query = "SELECT number, actor_name FROM subscribe WHERE is_download = 0"
             rows = sqlite.query(query)
             if not rows:
                 init.logger.info("订阅的老师还木有发布新作呦~")
                 return
             for row in rows:
-                number, actor_name, magnet_link = row
-
-                # 如果 magnet_link 为空，尝试获取
-                if not magnet_link:
-                    magnet_link = get_magnet_by_number(number)
-
-                    # 如果成功获取到 magnet_link，更新数据库
-                    if magnet_link:
-                        update_magnet_sql = "UPDATE subscribe SET magnet = ? WHERE number = ?"
-                        sqlite.execute_sql(update_magnet_sql, (magnet_link, number))
-
-                # 如果 magnet_link 存在（无论是原有的还是新获取的），继续处理
-                if magnet_link:
+                number, actor_name = row
+                magnet_link_list = get_magnet_by_number(number)
+                # 依次下载，直到成功后退出
+                for magnet_link in magnet_link_list:
+                    init.logger.warn(f"尝试使用[{magnet_link}]离线到115，请稍后...")
                     # 自动添加到离线下载
                     if download2spec_path(magnet_link, number, actor_name):
-                        # 更新下载状态
-                        update_download_sql = "UPDATE subscribe SET is_download = 1 WHERE number = ?"
-                        sqlite.execute_sql(update_download_sql, (number,))
+                        # 更新下载状态和下载链接
+                        update_download_sql = "UPDATE subscribe SET is_download = 1, magnet = ? WHERE number = ?"
+                        sqlite.execute_sql(update_download_sql, (magnet_link, number))
 
                         # 发送消息给用户
                         send_message2usr(number, sqlite)
-
+                        break
+                    else:
+                        init.logger.warn(f"[{magnet_link}]离线失败，继续尝试使用其它磁力下载...")
                 # 每次处理完一个任务后等待 10 秒
                 time.sleep(10)
 
