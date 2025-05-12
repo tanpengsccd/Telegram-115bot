@@ -6,6 +6,9 @@
 A Python-based Telegram bot for managing and controlling 115 Network Disk, supporting offline downloads, video uploads, directory synchronization, and more.
 
 ## Update Log
+v2.3.1
+- When the actress subscription offline download failed, bot will try to change the magnet link
+
 v2.3.0
 - Added movie subscription feature
 - Fixed various bugs
