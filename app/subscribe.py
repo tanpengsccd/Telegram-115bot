@@ -175,7 +175,6 @@ def crawl_magnet(url):
         return ""
     
     magnet_link_list = []
-    high_score = 0.0
 
     soup = BeautifulSoup(response.text, features="html.parser")
     magnet_div = soup.find('div', class_='magnet-links')
@@ -194,10 +193,7 @@ def crawl_magnet(url):
         date_div = item_column_odd.find('div', class_='date')
         date = date_div.find('span', class_='time').text
         score += calculate_score(date)
-        # if score > high_score:
-        #     high_score = score
-        #     selected_magnet_link = magnet_link
-        magnet_link_list.append({"score": score, "magent_link": magnet_link})
+        magnet_link_list.append({"score": score, "magnet_link": magnet_link})
 
     item_columns = magnet_div.findAll('div', class_='item columns is-desktop')
     for item_column in item_columns:
@@ -213,10 +209,7 @@ def crawl_magnet(url):
         date_div = item_column.find('div', class_='date')
         date = date_div.find('span', class_='time').text
         score += calculate_score(date)
-        # if score > high_score:
-        #     high_score = score
-        #     selected_magnet_link = magnet_link
-        magnet_link_list.append({"score": score, "magent_link": magnet_link})
+        magnet_link_list.append({"score": score, "magnet_link": magnet_link})
     # 按评级从高到低排序
     sorted_res_list = sorted(magnet_link_list, key=lambda x: x['score'], reverse=True)
     return sorted_res_list
@@ -261,7 +254,8 @@ def schedule_number():
                 number, actor_name = row
                 magnet_link_list = get_magnet_by_number(number)
                 # 依次下载，直到成功后退出
-                for magnet_link in magnet_link_list:
+                for item in magnet_link_list:
+                    magnet_link = item['magnet_link']
                     init.logger.warn(f"尝试使用[{magnet_link}]离线到115，请稍后...")
                     # 自动添加到离线下载
                     if download2spec_path(magnet_link, number, actor_name):
@@ -434,9 +428,9 @@ def escape_markdown_v2(text: str) -> str:
 
 
 # if __name__ == '__main__':
-    # init.init()
-    # magnet_link = get_magnet_by_number("ipz-266")
-    # print(magnet_link)
+#     init.init()
+#     magnet_link = get_magnet_by_number("OFJE-465")
+#     print(magnet_link)
     # number = "THU-043"
     # title = "完全主観×鬼イカせ 8時間BEST vol.01 鈴村あいり 河合あすな 野々浦暖 涼森れむ 八掛うみ"
     # actor_name = "涼森玲夢"
