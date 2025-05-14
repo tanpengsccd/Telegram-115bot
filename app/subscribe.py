@@ -161,6 +161,7 @@ def get_magnet_by_number(number):
             update_pub_url(number, f"{base_url}{href}")
             magnet_link_list = crawl_magnet(f"{base_url}{href}")
             return magnet_link_list
+    return None
 
 
 def crawl_magnet(url):
@@ -253,6 +254,10 @@ def schedule_number():
             for row in rows:
                 number, actor_name = row
                 magnet_link_list = get_magnet_by_number(number)
+                if not magnet_link_list:  # 检查是否返回有效磁力链接列表
+                    init.logger.info(f"[{number}]的磁力链接尚未发布")
+                    continue
+                
                 # 依次下载，直到成功后退出
                 for item in magnet_link_list:
                     magnet_link = item['magnet_link']
@@ -427,10 +432,10 @@ def escape_markdown_v2(text: str) -> str:
     
 
 
-# if __name__ == '__main__':
-#     init.init()
-#     magnet_link = get_magnet_by_number("OFJE-465")
-#     print(magnet_link)
+if __name__ == '__main__':
+    init.init()
+    magnet_link = get_magnet_by_number("OFJE-484")
+    print(magnet_link)
     # number = "THU-043"
     # title = "完全主観×鬼イカせ 8時間BEST vol.01 鈴村あいり 河合あすな 野々浦暖 涼森れむ 八掛うみ"
     # actor_name = "涼森玲夢"
