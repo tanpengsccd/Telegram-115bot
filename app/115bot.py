@@ -18,8 +18,8 @@ from subscribe_movie_handler import register_subscribe_movie_handlers
 
 def get_version(md_format=False):
     if md_format:
-        return r"v2\.3\.2"
-    return "v2.3.2"
+        return r"v2\.3\.3"
+    return "v2.3.3"
 
 def get_help_info():
     version = get_version()
