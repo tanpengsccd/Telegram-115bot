@@ -51,6 +51,13 @@ def del_all_subscribe():
         sql = f"delete from subscribe"
         sqlite.execute_sql(sql)
         init.logger.info("All subscribe has been deleted.")
+        
+def del_sub_by_actor(actor_id, actor_name):
+    with SqlLiteLib() as sqlite:
+        sql = f"delete from subscribe where actor_id = ?"
+        param = (actor_id,)
+        sqlite.execute_sql(sql, param)
+        init.logger.info(f"[{actor_name}] has been deleted.")
 
 
 def update_pub_url(number, pub_url):

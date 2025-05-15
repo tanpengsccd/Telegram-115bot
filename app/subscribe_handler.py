@@ -109,7 +109,7 @@ async def del_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if actor_name:
             del_subscribe_actor(actor_id)
             # 删除订阅数据库
-            sub2db.del_sub_by_actor(actor_name)
+            sub2db.del_sub_by_actor(actor_id, actor_name)
             init.logger.info("[{actor_name}]删除订阅成功.")
             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅[{actor_name}]删除订阅成功！")
             return SUBSCRIBE_OPERATE
