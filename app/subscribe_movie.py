@@ -160,6 +160,7 @@ def check_condition(res, key):
     if res_list:
         # 按分数从高到低排序
         sorted_res_list = sorted(res_list, key=lambda x: x['score'], reverse=True)
+        highest_score_item = None
         for item in sorted_res_list:
             if init.bot_config['sub_condition']['dolby_vision']:
                 # 必须同时满足杜比卫视和中字
@@ -296,6 +297,5 @@ def update_subscribe(movie_name, post_url, download_url):
 
 # if __name__ == '__main__':
 #     init.init_log()
-#     movie_name = get_moive_name(1195506)
-#     post_url = get_movie_cover(movie_name)
-#     print(post_url)
+#     init.load_yaml_config()
+#     schedule_movie()

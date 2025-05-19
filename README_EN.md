@@ -6,6 +6,10 @@
 A Python-based Telegram bot for managing and controlling 115 Network Disk, supporting offline downloads, video uploads, directory synchronization, and more.
 
 ## Update Log
+v2.3.5
+- Fixed escaping errors in MarkdownV2 formatting for offline download timeout alert messages  
+- Optimized movie subscription download logic  
+
 v2.3.4
 - bug fix
 

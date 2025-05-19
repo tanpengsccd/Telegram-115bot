@@ -54,7 +54,7 @@ category_folder:
 # 2、凌晨3：00查询当前已订阅影片是否更新磁力
 subscribe:
   user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-  javdb_cookie: "list_mode=h; theme=auto; over18=1; _ym_uid=1732717712665446899; _ym_d=1732717712; remember_me_token=eyJfcmFpbHMiOnsibWVzc2FnZSI6IklqWklOMFpvYmxkNFZYTk1TMjFLYmpsbmVIcHBJZz09IiwiZXhwIjoiMjAyNC0xMi0wNVQxNDo1Njo1OC4wMDBaIiwicHVyIjoiY29va2llLnJlbWVtYmVyX21lX3Rva2VuIn19--05e853a283c709fb060cbedac0d57dad5ddde1a0; locale=zh; hide_app_banner=1; _ym_isad=1; cf_clearance=YSC7HcUjlyD78b0RVe1EU7p0BRmSZZPIZ2wJVCk9U60-1732982831-1.2.1.1-1DE8MyiMSDO1QeVcYSPA8WSwCaACDefnIRI8zxvgxqw4yQUvxvGau8JTB1hV5LcvZ4J_XMCJK3ly1W5mNfE7euhW.wpr0F.cD9SYO8HLdoWvQFV1qdgR7XHXh4hQrbgWNffTe8BlBNSQQwUXc1NvOaJHJzj922t0jJozpJuW_DZS_pl43b4flCjOTTuQoEnUFAf0EfUwpZ8rRzPx4QDaviYpRG5QZeWpTyaQXcZjBcec_KyKsCFEBzAdGwu4GZ8sgCa6zFD59U.ihx.J6vxolgyWvC_.Au0vo7uJwl1ECGuD4qNme.XyN23D_I7Q5ycNh3ZnP92C1oXcw2WnjraOquExopjGTeJ1RBAUot0poFk3pdhFnbgxFgWENDrUuIVuaECuRNmvYgd63nMTO0K3Cg; _jdb_session=tMFQvLokh5g5rfSjaRubuheRetkDKULkF3ZoZfbsyd9EhgepULZj6ayDL%2FqZ%2FTCt%2Bg6n%2B1zg8i0ZzyI68L9KYpKqj1JDH9D%2B%2BClWLwf2K1ExgdJQ%2FeiGX3aq%2F%2FzP%2B04TwxPiitt44cvq8wJb%2BTgmiQptXmg5%2FeO1mw9jW48Zzc4q2L8nx7HVBTQGBLq54z0jctxmAhrHy6aNmJJppLsWPxIAbu6sXXLhhvgbt8gTsa4VuRGlIjMrSHpOibimozVUehWc4MVkwzjVk%2B%2Bm%2BP%2FoB3XdUsq4GRtc%2F72Z6kqurF%2Bz8SwVcj%2BFn6Olm%2BU8tm%2FQ5m3LuOdg5QvReQ1jZSJhdofxGWSA5Q%2FOhJ8h0Uu7ILl%2BUoeyzeyuX1ls4ggufm7YcUA%3D--yoXmKKdIcFxDD3FZ--%2BFXsja4903AhWi2YlKO%2BxQ%3D%3D"
+  javdb_cookie: "list_mode=h; theme=auto; over18=1;"
   # 115的实际保存目录，订阅会在指定路径自动创建以演员命名的文件夹方便分类
   path: /AV/女优
   # 订阅权重 设置高清，字幕的分数，订阅时会自动订阅得分最高的磁力

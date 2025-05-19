@@ -23,6 +23,11 @@ def get_actor_id(actor_name):
     try:
         # 发起 GET 请求
         response = requests.get(search_url, headers=headers)
+        
+        if response.status_code != 200:
+            init.logger.error(f"请求[actor_id]失败，响应状态码: {response.status_code}")
+            return None
+            
         response.raise_for_status()
 
         # 使用 BeautifulSoup 解析 HTML
@@ -38,11 +43,11 @@ def get_actor_id(actor_name):
             actor_id = actor_link["href"].split("/")[-1]  # 提取 ID
             return actor_id
         else:
-            print("未找到演员链接，请检查演员名字或 HTML 结构。")
+            init.logger.warn("未找到演员链接，请检查演员名字或 HTML 结构。")
             return None
 
     except requests.exceptions.RequestException as e:
-        print(f"请求失败: {e}")
+        init.logger.error(f"请求失败: {e}")
         return None
 
 
@@ -69,6 +74,9 @@ def update_pub_url(number, pub_url):
 
 def add_subscribe2db(actor_name, sub_user):
     actor_id = get_actor_id(actor_name)
+    if not actor_id:
+        init.logger.error(f"添加订阅[{actor_name}]失败！")
+        return
     headers = {
         "user-agent": init.USER_AGENT,
         "cookie": init.JAVDB_COOKIE,
@@ -218,9 +226,11 @@ def crawl_magnet(url):
         date = date_div.find('span', class_='time').text
         score += calculate_score(date)
         magnet_link_list.append({"score": score, "magnet_link": magnet_link})
-    # 按评级从高到低排序
-    sorted_res_list = sorted(magnet_link_list, key=lambda x: x['score'], reverse=True)
-    return sorted_res_list
+    if magnet_link_list:
+        # 按评级从高到低排序
+        sorted_res_list = sorted(magnet_link_list, key=lambda x: x['score'], reverse=True)
+        return sorted_res_list
+    return None
 
 
 def days_since(date_str):
@@ -439,10 +449,10 @@ def escape_markdown_v2(text: str) -> str:
     
 
 
-if __name__ == '__main__':
-    init.init()
-    magnet_link = get_magnet_by_number("OFJE-484")
-    print(magnet_link)
+# if __name__ == '__main__':
+    # init.init()
+    # magnet_link = get_magnet_by_number("OFJE-484")
+    # print(magnet_link)
     # number = "THU-043"
     # title = "完全主観×鬼イカせ 8時間BEST vol.01 鈴村あいり 河合あすな 野々浦暖 涼森れむ 八掛うみ"
     # actor_name = "涼森玲夢"

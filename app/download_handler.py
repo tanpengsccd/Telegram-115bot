@@ -152,7 +152,7 @@ async def select_sub_category(update: Update, context: ContextTypes.DEFAULT_TYPE
                 # 下载超时删除任务
                 init.client_115.clear_failed_task(link, resource_name)
                 await context.bot.send_message(chat_id=update.effective_chat.id,
-                                            text=f"`{resource_name}`  \n😭离线下载超时，建议更换链接重试~",
+                                            text=f"`{resource_name}`  \n😭离线下载超时，建议更换链接重试！",
                                             parse_mode='MarkdownV2')
     else:
         success, files = init.client_115.save_shared_link(init.bot_config['offline_path'], link)

@@ -177,7 +177,7 @@ def get_actor_name(actor_id):
         params = (actor_id,)
         result = sqlite.query_one(sql, params)
         if result:
-            return result[0]
+            return result
         else:
             return None
 
