@@ -73,7 +73,7 @@ def schedule_movie():
                 tmdb_id, movie_name, category_folder = row
                 download_url = search_update(tmdb_id)
                 if download_url:
-                    init.logger.info(f"电影[{movie_name}]已更新，下载链接为[{download_url}], 正在添加到离线下载...")
+                    init.logger.info(f"电影[{movie_name}]已发布，下载链接为[{download_url}], 正在添加到离线下载...")
                     # 添加到离线下载
                     if download_from_link(download_url, movie_name, category_folder):
                         # 更新下载状态
@@ -204,7 +204,7 @@ def download_from_link(download_url, movie_name, save_path):
                     # 重名名资源
                     init.client_115.rename(f"{init.bot_config['offline_path']}/{resource_name}", f"{init.bot_config['offline_path']}/{movie_name}")
                     # 移动文件
-                    init.client_115.move_file(f"{init.bot_config['offline_path']}/{resource_name}", save_path)
+                    init.client_115.move_file(f"{init.bot_config['offline_path']}/{movie_name}", save_path)
                 else:
                     # 创建文件夹
                     init.client_115.create_folder(f"{init.bot_config['offline_path']}/{movie_name}")

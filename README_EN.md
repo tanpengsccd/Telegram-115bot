@@ -6,6 +6,10 @@
 A Python-based Telegram bot for managing and controlling 115 Network Disk, supporting offline downloads, video uploads, directory synchronization, and more.
 
 ## Update Log
+v2.3.6
+- Fixed error with subscribe movie download
+- Due to the triggering of JAVDB's anti-crawling mechanism, the crawling failed and the AV subscription function was temporarily closed. A stable solution will be updated later.
+
 v2.3.5
 - Fixed escaping errors in MarkdownV2 formatting for offline download timeout alert messages  
 - Optimized movie subscription download logic  
