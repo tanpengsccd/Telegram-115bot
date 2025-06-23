@@ -275,7 +275,8 @@ def escape_markdown_v2(text: str) -> str:
         return escaped_text
     
     
-def is_subscribe(tmdb_id):
+def is_subscribe(movie_name):
+    tmdb_id = get_tmdb_id(movie_name)
     with SqlLiteLib() as sqlite:
         sql = "select movie_name from sub_movie where tmdb_id=?"
         params = (tmdb_id,)
