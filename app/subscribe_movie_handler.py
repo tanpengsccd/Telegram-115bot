@@ -117,7 +117,7 @@ async def subscribe_operate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         subscribe_text = "点击TMDB\\_ID自动复制 \n"
         for item in movie_list:
             markdown_v2 = escape_markdown_v2(item[1])
-            subscribe_text += fr"`{item[0]}`\. {markdown_v2}\n"
+            subscribe_text += f"`{item[0]}`\\. {markdown_v2}\n"
         subscribe_text = subscribe_text.strip()
         if not movie_list:
             subscribe_text = "订阅列表为空。"
