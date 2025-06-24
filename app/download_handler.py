@@ -203,7 +203,7 @@ async def specify_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 更新订阅信息
         update_subscribe(resource_name, cover_url, download_url)
         await context.bot.send_message(chat_id=update.effective_chat.id,
-                                   text=f"💡订阅影片`{resource_name}`已手动下载!",
+                                   text=f"💡订阅影片`{resource_name}`已手动下载成功\\！",
                                    parse_mode='MarkdownV2')
         
 
