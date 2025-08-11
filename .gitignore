@@ -31,7 +31,7 @@ ENV/
 *.swo
 
 # Project specific
-config/config.yaml
+**/config.yaml
 config/user_session.session
 config/db.db
 config/115_tokens.json
