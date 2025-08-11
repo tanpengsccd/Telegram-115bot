@@ -21,9 +21,6 @@ async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not init.check_user(usr_id):
         await update.message.reply_text("⚠️对不起，您无权使用115机器人！")
         return ConversationHandler.END
-    if not init.initialize_115client():
-        await update.message.reply_text("💀115Cookie已过期，请重新设置！")
-        return ConversationHandler.END
 
     keyboard = [
         [InlineKeyboardButton("添加订阅", callback_data="add_subscribe")],

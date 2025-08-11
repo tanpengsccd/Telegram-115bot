@@ -19,9 +19,6 @@ async def sync_strm_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not init.check_user(usr_id):
         await update.message.reply_text("⚠️对不起，您无权使用115机器人！")
         return ConversationHandler.END
-    if not init.initialize_115client():
-        await update.message.reply_text(f"💀115Cookie已过期，请重新设置！")
-        return ConversationHandler.END
 
     # 显示主分类（电影/剧集）
     keyboard = [
@@ -93,8 +90,8 @@ async def select_sub_category_sync(update: Update, context: ContextTypes.DEFAULT
 
         await context.bot.send_message(chat_id=update.effective_chat.id,
                                        text=f"🔄[{selected_path}]正在同步strm文件，请稍后...")
-        video_files = []
-        init.client_115.get_file_from_path(selected_path, video_files)
+        # 获取视频文件列表
+        video_files = init.openapi_115.get_files_from_dir(selected_path, file_type=4)
         for file in video_files:
             file_path = Path(file)
             video_path = mount_root / file_path.relative_to("/")

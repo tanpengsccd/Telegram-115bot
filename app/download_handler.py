@@ -21,10 +21,9 @@ SELECT_MAIN_CATEGORY, SELECT_SUB_CATEGORY, SPECIFY_NAME = range(10, 13)
 class DownloadUrlType(Enum):
     ED2K = "ED2K"
     THUNDER = "thunder"
-    HTTP = "http"
     FTP = "ftp"
+    HTTPS = "https"
     MAGNET = "magnet"
-    SHARE = "share"
     UNKNOWN = "unknown"
     
     def __str__(self):
@@ -36,9 +35,7 @@ async def start_d_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not init.check_user(usr_id):
         await update.message.reply_text("⚠️对不起，您无权使用115机器人！")
         return ConversationHandler.END
-    if not init.initialize_115client():
-        await update.message.reply_text(f"💀115Cookie已过期，请重新设置！")
-        return ConversationHandler.END
+
     if context.args:
         magnet_link = " ".join(context.args)
         context.user_data["link"] = magnet_link  # 将用户参数存储起来
@@ -110,59 +107,56 @@ async def select_sub_category(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["selected_path"] = selected_path
     selected_main_category = context.user_data["selected_main_category"]
     # 下载磁力
-    if context.user_data["dl_url_type"] != DownloadUrlType.SHARE:
-        response, resource_name = init.client_115.offline_download(link)
-        if response.get('errno') is not None:
-            await context.bot.send_message(chat_id=update.effective_chat.id,
-                                        text=f"❌离线遇到错误！error_type: {response.get('errtype')}！")
-        else:
-            await context.bot.send_message(chat_id=update.effective_chat.id,
-                                        text=f"`{resource_name}`  \n✅添加离线成功",
-                                        parse_mode="MarkdownV2")
-            download_success = init.client_115.check_offline_download_success(link, resource_name)
-            if download_success:
-                context.user_data["resource_name"] = resource_name
-                await context.bot.send_message(chat_id=update.effective_chat.id,
-                                            text=f"`{resource_name}`  \n✅离线下载完成",
-                                            parse_mode="MarkdownV2")
-                time.sleep(10)
-
-                # 如果下载的内容是目录
-                if init.client_115.is_directory(f"{init.bot_config['offline_path']}/{resource_name}"):
-                    # 清除垃圾文件
-                    init.client_115.auto_clean(f"{init.bot_config['offline_path']}/{resource_name}")
-                    # 移动文件
-                    init.client_115.move_file(f"{init.bot_config['offline_path']}/{resource_name}", selected_path)
-                    context.user_data["old_name"] = f"{selected_path}/{resource_name}"
-                # 如果下载的内容是文件，为文件套一个文件夹
-                else:
-                    init.client_115.create_dir_for_video_file(f"{init.bot_config['offline_path']}/{resource_name}")
-                    init.client_115.move_file(f"{init.bot_config['offline_path']}/temp", selected_path)
-                    context.user_data["old_name"] = f"{selected_path}/temp"
-                await context.bot.send_message(chat_id=update.effective_chat.id,
-                                            text=f"`{resource_name}`  \n✅移动到分类文件夹\\[{selected_path}\\]成功",
-                                            parse_mode="MarkdownV2")
-
-                await context.bot.send_message(chat_id=update.effective_chat.id,
-                                            text=f"🈯请指定标准的资源名称，便于削刮。\\(点击资源名称自动复制\\)  \n\n**`{resource_name}`**",
-                                            parse_mode='MarkdownV2')
-                # 重命名文件
-                return SPECIFY_NAME
-            else:
-                # 下载超时删除任务
-                init.client_115.clear_failed_task(link, resource_name)
-                await context.bot.send_message(chat_id=update.effective_chat.id,
-                                            text=f"`{resource_name}`  \n😭离线下载超时，建议更换链接重试！",
-                                            parse_mode='MarkdownV2')
+    # 清除云端任务，避免重复下载
+    init.openapi_115.clear_cloud_task()
+    offline_success = init.openapi_115.offline_download(link)
+    if not offline_success:
+        await context.bot.send_message(chat_id=update.effective_chat.id,
+                                    text=f"❌离线遇到错误！")
     else:
-        success, files = init.client_115.save_shared_link(init.bot_config['offline_path'], link)
-        if success:
-            for file in files:
-                # 移动到目标目录
-                init.client_115.move_file(f"{init.bot_config['offline_path']}/{file}", selected_path)
+        await context.bot.send_message(chat_id=update.effective_chat.id,
+                                    text=f"`{link}`  \n✅添加离线成功",
+                                    parse_mode="MarkdownV2")
+        download_success, resource_name = init.openapi_115.check_offline_download_success(link)
+        if download_success:
+            context.user_data["resource_name"] = resource_name
             await context.bot.send_message(chat_id=update.effective_chat.id,
-                                            text=f"`{resource_name}`  \n✅移动到分类文件夹\\[{selected_path}\\]成功",
-                                            parse_mode="MarkdownV2")
+                                        text=f"`{resource_name}`  \n✅离线下载完成",
+                                        parse_mode="MarkdownV2")
+            time.sleep(1)
+
+            # 如果下载的内容是目录
+            if init.openapi_115.is_directory(f"{init.bot_config['offline_path']}/{resource_name}"):
+                # 清除垃圾文件
+                init.openapi_115.auto_clean(f"{init.bot_config['offline_path']}/{resource_name}")
+                # 移动文件
+                init.openapi_115.move_file(f"{init.bot_config['offline_path']}/{resource_name}", selected_path)
+                context.user_data["old_name"] = f"{selected_path}/{resource_name}"
+            # 如果下载的内容是文件，为文件套一个文件夹
+            else:
+                init.openapi_115.create_dir_for_file(f"{init.bot_config['offline_path']}/{resource_name}", "temp")
+                # 移动文件到临时目录
+                init.openapi_115.move_file(f"{init.bot_config['offline_path']}/{resource_name}", f"{init.bot_config['offline_path']}/temp")
+                # 移动临时目录到指定分类目录
+                init.openapi_115.move_file(f"{init.bot_config['offline_path']}/temp", selected_path)
+                context.user_data["old_name"] = f"{selected_path}/temp"
+            await context.bot.send_message(chat_id=update.effective_chat.id,
+                                        text=f"`{resource_name}`  \n✅移动到分类文件夹\\[{selected_path}\\]成功",
+                                        parse_mode="MarkdownV2")
+
+            await context.bot.send_message(chat_id=update.effective_chat.id,
+                                        text=f"🈯请指定标准的资源名称，便于削刮。\\(点击资源名称自动复制\\)  \n\n**`{resource_name}`**",
+                                        parse_mode='MarkdownV2')
+            # 重命名文件
+            return SPECIFY_NAME
+        else:
+            # 下载超时删除任务
+            init.openapi_115.clear_failed_task(link)
+            await context.bot.send_message(chat_id=update.effective_chat.id,
+                                        text=f"`{resource_name}`  \n😭离线下载超时，建议更换链接重试！",
+                                        parse_mode='MarkdownV2')
+            return ConversationHandler.END
+            
 
 
 async def specify_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -172,8 +166,8 @@ async def specify_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     old_name = context.user_data["old_name"]
     new_name = f"{selected_path}/{resource_name}"
     # 重命名资源
-    init.client_115.rename(old_name, new_name)
-    file_list = init.client_115.get_files_from_dir(new_name)
+    init.openapi_115.rename(old_name, resource_name)
+    file_list = init.openapi_115.get_files_from_dir(new_name)
     init.logger.info(file_list)
     # 创建软链
     create_strm_file(new_name, file_list)
@@ -230,7 +224,7 @@ def is_valid_link(link: str) -> DownloadUrlType:
         DownloadUrlType.MAGNET: r'^magnet:\?xt=urn:[a-z0-9]+:[a-zA-Z0-9]{32,40}',
         DownloadUrlType.ED2K: r'^ed2k://\|file\|.+\|[0-9]+\|[a-fA-F0-9]{32}\|',
         DownloadUrlType.THUNDER: r'^thunder://[a-zA-Z0-9=]+',
-        DownloadUrlType.HTTP: r'^https?://[^\s/$.?#].[^\s]*',
+        DownloadUrlType.HTTPS: r'^https?://[^\s/$.?#].[^\s]*',
         DownloadUrlType.FTP: r'^ftp://[^\s/$.?#].[^\s]*'
     }
     
@@ -238,17 +232,6 @@ def is_valid_link(link: str) -> DownloadUrlType:
     for url_type, pattern in patterns.items():
         if re.match(pattern, link):
             return url_type
-
-    # 特殊处理115分享链接的两种格式
-    share_patterns = [
-        # 标准格式: https://115.com/s/abc123?password=1234
-        r"(?:/s/|share\.115\.com/)(?P<share_code>[a-z0-9]+)\?password=(?P<receive_code>[a-z0-9]{4})",
-        # 简化格式: abc123-1234
-        r"(?P<share_code>[a-z0-9]+)-(?P<receive_code>[a-z0-9]{4})"
-    ]
-    for pattern in share_patterns:
-        if re.search(pattern, link):
-            return DownloadUrlType.SHARE
         
     return DownloadUrlType.UNKNOWN
 

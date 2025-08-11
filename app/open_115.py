@@ -1,0 +1,772 @@
+import requests
+import os
+import base64
+import hashlib
+import re
+import init
+import qrcode
+import json
+import time
+from pathlib import Path
+from functools import wraps
+from message_queue import add_task_to_queue
+from alioss import upload_file_to_oss
+
+
+
+def handle_token_expiry(func):
+    """装饰器：统一处理API调用中的token过期情况"""
+    @wraps(func)
+    def wrapper(self, *args, **kwargs):
+        max_retries = 2  # 最大重试次数
+        for attempt in range(max_retries):
+            try:
+                # 调用原始函数，获取HTTP响应
+                response = func(self, *args, **kwargs)
+                
+                # 检查响应是否是字典且包含错误码
+                if isinstance(response, dict) and 'code' in response:
+                    if response['code'] == 40140125:
+                        # token需要刷新
+                        if attempt < max_retries - 1:  # 还有重试机会
+                            init.logger.info("Token需要刷新，正在重试...")
+                            self.refresh_access_token()
+                            continue
+                        else:
+                            init.logger.error("Token刷新后仍然失败")
+                            return response
+                    elif response['code'] in [40140116, 40140119]:
+                        # token已过期，需要重新授权
+                        init.logger.error("Access token 已过期，请重新授权！")
+                        return response
+                    elif response['code'] == 40140118:
+                        init.logger.error("开发者认证已过期，请到115开放平台重新授权！")
+                        return response
+                    elif response['code'] == 40140110:
+                        init.logger.error("应用已过期，请到115开放平台重新授权！")
+                        return response
+                    elif response['code'] == 40140109:
+                        init.logger.error("应用被停用，请到115开放平台查询详细信息！")
+                        return response
+                    elif response['code'] == 40140108:
+                        init.logger.error("应用审核未通过，请稍后再试！")
+                        return response
+                
+                # 成功或其他情况，直接返回
+                return response
+                
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    init.logger.warn(f"API调用失败，正在重试: {e}")
+                    continue
+                else:
+                    init.logger.error(f"API调用最终失败: {e}")
+                    raise
+        
+        return response
+    return wrapper
+
+
+class OpenAPI_115:
+    def __init__(self):
+        self.access_token = ""
+        self.refresh_token = ""
+        self.base_url = "https://proapi.115.com"
+        self.get_token()  # 初始化时获取token
+        
+    def get_token(self):
+        if not self.refresh_token or not self.access_token:
+            if not os.path.exists(init.TOKEN_FILE):
+                init.logger.error("请先进行授权，获取refresh_token！")
+                self.auth_pkce(init.bot_config['allowed_user'], init.bot_config['115_app_id'])
+            with open(init.TOKEN_FILE, 'r', encoding='utf-8') as f:
+                tokens = json.load(f)
+                # 从文件中读取access_token和refresh_token
+                self.access_token = tokens.get('access_token', '')
+                self.refresh_token = tokens.get('refresh_token', '')
+        
+        
+    def auth_pkce(self, sub_user, app_id):
+        header = {
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+        verifier, challenge = self.get_challenge()
+        data = {
+            "client_id": app_id,
+            "code_challenge": challenge,
+            "code_challenge_method": "sha256"
+        }
+        response = requests.post(f"https://passportapi.115.com/open/authDeviceCode", headers=header, data=data)
+        res = response.json()
+        if response.status_code == 200:
+            uid = res['data']['uid']
+            check_time = res['data']['time']
+            qr_data = res['data']['qrcode']
+            sign = res['data']['sign']
+        else:
+            init.logger.error(f"获取二维码失败: {response.status_code} - {response.text}")
+            raise Exception(f"Error: {response.status_code} - {response.text}")
+        
+        # 2. 创建QRCode对象并生成图片
+        qr = qrcode.QRCode(
+            version=1,               # 控制大小（1~40，默认为自动）
+            error_correction=qrcode.constants.ERROR_CORRECT_L,  # 容错率（L/M/Q/H）
+            box_size=10,             # 每个模块的像素大小
+            border=4,                # 边框宽度（模块数）
+        )
+        qr.add_data(qr_data)        # 添加文本数据
+        qr.make(fit=True)           # 自动调整版本
+
+        # 3. 生成图片并保存为文件
+        img = qr.make_image(fill_color="black", back_color="white")
+        save_path= f"{init.IMAGE_PATH}/qrcode.png"
+        if os.path.exists(save_path):
+            os.remove(save_path)
+        img.save(save_path)      # 保存为PNG
+        # 发送扫码通知
+        add_task_to_queue(sub_user, save_path, "请用115APP扫码授权！")
+        
+        time.sleep(5)
+        params = {
+            "uid": uid,
+            "time": check_time,
+            "sign": sign
+        }
+        while True:
+            response = requests.get(f"https://qrcodeapi.115.com/get/status/", params=params)
+            if response.status_code == 200:
+                res = response.json()
+                if res['state'] == 0:
+                    init.logger.info("二维码已失效...")
+                    break
+                else:
+                    # 1.扫码成功，等待确认
+                    if res['data']['status'] == 1:
+                        time.sleep(1)
+                        continue
+                    elif res['data']['status'] == 2:
+                        # 2.扫码成功，获取access_token
+                        init.logger.info("二维码扫码成功，正在获取access_token...")
+                        time.sleep(1)
+                        response = requests.post("https://passportapi.115.com/open/deviceCodeToToken", headers=header, data={
+                            "uid": uid,
+                            "code_verifier": verifier
+                        })
+                        res = response.json()
+                        if response.status_code == 200 and 'data' in res:
+                            self.access_token = res['data']['access_token']
+                            self.refresh_token = res['data']['refresh_token']
+                            self.expires_in = res['data']['expires_in']
+                            init.logger.info("access_token获取成功！")
+                            self.save_token_to_file(self.access_token, self.refresh_token, init.TOKEN_FILE)
+                            break
+              
+                        
+    def refresh_access_token(self):
+        if not self.refresh_token:
+            if not os.path.exists(init.TOKEN_FILE):
+                init.logger.error("请先进行授权，获取refresh_token！")
+                add_task_to_queue(init.bot_config['allowed_user'], "/app/images/male023.png", "请先进行授权，获取refresh_token！")
+                return
+            with open(init.TOKEN_FILE, 'r', encoding='utf-8') as f:
+                tokens = json.load(f)
+                # 从文件中读取access_token和refresh_token
+                self.access_token = tokens.get('access_token', '')
+                self.refresh_token = tokens.get('refresh_token', '')
+        
+        header = {
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+        
+        url = "https://passportapi.115.com/open/refreshToken"
+        data = {
+            "refresh_token": self.refresh_token
+        }
+        response = requests.post(url, headers=header, data=data)
+        res = response.json()
+        if response.status_code == 200 and 'data' in res:
+            self.access_token = res['data']['access_token']
+            self.refresh_token = res['data']['refresh_token']
+            self.save_token_to_file(self.access_token, self.refresh_token, init.TOKEN_FILE)
+            init.logger.info("Access token 更新成功.")
+        else:
+            init.logger.error("Access token 更新失败!")
+            raise Exception(f"Failed to refresh access token: {response.text}")
+        
+
+    def _get_headers(self):
+        return {
+            "Authorization": f"Bearer {self.access_token}"
+        }
+
+    def _make_api_request(self, method: str, url: str, params=None, data=None, headers=None):
+        """统一的API请求方法"""
+        if headers is None:
+            headers = self._get_headers()
+        
+        if method.upper() == 'GET':
+            response = requests.get(url, headers=headers, params=params)
+        elif method.upper() == 'POST':
+            response = requests.post(url, headers=headers, data=data)
+        else:
+            raise ValueError(f"不支持的HTTP方法: {method}")
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            init.logger.error(f"API请求失败: {response.status_code} - {response.text}")
+            return {"code": response.status_code, "message": response.text}
+    
+    @handle_token_expiry
+    def get_file_info(self, path: str):
+        url = f"{self.base_url}/open/folder/get_info"
+        params = {"path": path}
+        response = self._make_api_request('GET', url, params=params)
+        
+        # 如果成功获取文件信息，记录日志
+        if isinstance(response, dict) and response.get('code') == 0:
+            init.logger.debug(f"获取文件信息成功: {response}")
+            return response['data']
+        else:
+            init.logger.error(f"获取文件信息失败: {response}")
+            if response['code'] == 40140125:
+                return response
+            return None
+    
+    @handle_token_expiry
+    def offline_download(self, download_url):
+        url = f"{self.base_url}/open/offline/add_task_urls"
+        file_info = self.get_file_info(init.bot_config['offline_path'])
+        if not file_info:
+            init.logger.error(f"获取离线下载目录信息失败: {file_info}")
+            return False
+        
+        data = {
+            "urls": download_url,
+            "wp_path_id": file_info['file_id']
+        }
+        response = self._make_api_request('POST', url, data=data, headers=self._get_headers())
+        if response['state'] == True:
+            init.logger.info(f"离线下载任务添加成功: {response}")
+            return True
+        else:
+            init.logger.error(f"离线下载任务添加失败: {response}")
+            if response['code'] == 40140125:
+                return response
+            return None
+
+    @handle_token_expiry
+    def get_offline_tasks(self):
+        url = f"{self.base_url}/open/offline/get_task_list"
+        response = self._make_api_request('GET', url)
+        if isinstance(response, dict) and 'data' in response:
+            init.logger.info(f"获取离线下载任务列表成功: {response}")
+            return response['data'] 
+        else:
+            init.logger.error(f"获取离线下载任务列表失败: {response}")
+            if response['code'] == 40140125:
+                return response
+            return None
+    
+    @handle_token_expiry
+    def del_faild_offline_task(self, info_hash):
+        url = f"{self.base_url}/open/offline/del_task"
+        data = {
+            "info_hash": info_hash,
+            "del_source_file": 1
+        }
+        response = self._make_api_request('POST', url, data=data, headers=self._get_headers())
+        if response['state'] == True:
+            init.logger.info(f"清理失败的离线下载任务成功: {response}")
+            return True
+        else:
+            init.logger.error(f"清理失败的离线下载任务失败: {response['message']}")
+            if response['code'] == 40140125:
+                return response
+            return None
+
+    @handle_token_expiry
+    def clear_cloud_task(self, flag=1):
+        url = f"{self.base_url}/open/offline/clear_task"
+        # 1清空全部、2清空失败、3清空进行中、4清空已完成、5清空全部任务并清空对应源文件
+        data = {
+            "flag": flag 
+        }
+        response = self._make_api_request('POST', url, data=data)
+        if response['state'] == True:
+            init.logger.info(f"清理云端任务成功: {response}")
+            return True
+        else:
+            init.logger.error(f"清理云端任务失败: {response['message']}")
+            if response['code'] == 40140125:
+                return response
+            return None
+
+    @handle_token_expiry
+    def move_file(self, source_path, target_path):
+        """移动文件或目录"""
+        src_file_info = self.get_file_info(source_path)
+        if not src_file_info:
+            init.logger.error(f"获取源文件信息失败: {src_file_info}")
+            return False
+        
+        dst_file_info = self.get_file_info(target_path)
+        if not dst_file_info:
+            init.logger.error(f"获取目标文件信息失败: {dst_file_info}")
+            return False
+        
+        file_id = src_file_info['file_id']
+        to_cid = dst_file_info['file_id']
+        url = f"{self.base_url}/open/ufile/move"
+        data = {
+            "file_ids": file_id,
+            "to_cid": to_cid
+        }
+        response = self._make_api_request('POST', url, data=data, headers=self._get_headers())
+        if response['state'] == True:
+            init.logger.info(f"文件移动成功: [{source_path}] -> [{target_path}]")
+            return True
+        else:
+            init.logger.error(f"文件移动失败: {response['message']}")
+            if response['code'] == 40140125:
+                return response
+            return None
+    
+    @handle_token_expiry      
+    def rename(self, old_name, new_name):
+        """重命名文件或目录"""
+        file_info = self.get_file_info(old_name)
+        if not file_info:
+            init.logger.error(f"获取文件信息失败: {file_info}")
+            return False
+        
+        file_id = file_info['file_id']
+        url = f"{self.base_url}/open/ufile/update"
+        data = {
+            "file_id": file_id,
+            "file_name": new_name
+        }
+        response = self._make_api_request('POST', url, data=data, headers=self._get_headers())
+        if response['state'] == True:
+            init.logger.info(f"文件重命名成功: [{old_name}] -> [{new_name}]")
+            return True
+        else:
+            init.logger.error(f"文件重命名失败: {response['message']}")
+            if response['code'] == 40140125:
+                return response
+            return None
+            
+    @handle_token_expiry
+    def get_file_list(self, cid, file_type=None, limit=1000, show_dir=0):
+        """获取指定目录下的所有文件"""
+        url = f"{self.base_url}/open/ufile/files"
+        if file_type is None:
+            params = {"cid": cid,
+                    "limit": limit,
+                    "show_dir": show_dir}
+        else:
+            params = {"cid": cid,
+                    "type": file_type,
+                    "limit": limit}
+        response = self._make_api_request('GET', url, params=params, headers=self._get_headers())
+        
+        if isinstance(response, dict) and response.get('code') == 0:
+            init.logger.debug(f"获取文件列表成功: {response}")
+            return response['data']
+        else:
+            init.logger.error(f"获取文件列表失败: {response}")
+            if response['code'] == 40140125:
+                return response
+            return None
+        
+    @handle_token_expiry
+    def create_directory(self, pid, file_name):
+        """创建目录"""
+        url = f"{self.base_url}/open/folder/add"
+        data = {
+            "pid": pid,
+            "file_name": file_name,
+        }
+        response = self._make_api_request('POST', url, data=data, headers=self._get_headers())
+        
+        if isinstance(response, dict) and response.get('code') == 0:
+            init.logger.info(f"目录创建成功: {file_name}")
+            return True
+        else:
+            init.logger.error(f"目录创建失败: {response}")
+            if response['code'] == 40140125:
+                return response
+            return None
+        
+    @handle_token_expiry
+    def delet_file(self, file_ids):
+        """删除文件或目录"""
+        url = f"{self.base_url}/open/ufile/delete"
+        data = {
+            "file_ids": file_ids
+        }
+        response = self._make_api_request('POST', url, data=data, headers=self._get_headers())
+        if response['state'] == True:
+            init.logger.info(f"文件或目录删除成功: {file_ids}")
+            return True
+        else:
+            init.logger.error(f"文件或目录删除失败: {response['message']}")
+            if response['code'] == 40140125:
+                return response
+            return None
+    
+    @handle_token_expiry
+    def upload_file(self, **kwargs):
+        """上传文件"""
+        target = kwargs.get('target') 
+        file_info = self.get_file_info(target)
+        if not file_info:
+            init.logger.error(f"获取目标目录信息失败: {file_info}")
+            return False, False
+        target = f"U_1_{file_info['file_id']}"
+        url = f"{self.base_url}/open/upload/init"
+        if not kwargs.get('sign_key') and not kwargs.get('sign_val'):
+            # 如果没有提供sign_key和sign_val，则直接使用文件名和大小
+            data = {
+                "file_name": kwargs.get('file_name', ''),
+                "file_size": kwargs.get('file_size', 0),    
+                "target": target,  # 0: 根目录, 1: 指定目录
+                "fileid": kwargs.get('fileid', '')
+            }
+        else:
+            # 如果提供了sign_key和sign_val，则使用它们进行二次认证
+            data = {
+                "file_name": kwargs.get('file_name', ''),
+                "file_size": kwargs.get('file_size', 0),    
+                "target": target,  # 0: 根目录, 1: 指定目录
+                "fileid": kwargs.get('fileid', ''),
+                "sign_key": kwargs.get('sign_key'),
+                "sign_val": kwargs.get('sign_val')
+            }
+        response = self._make_api_request('POST', url, data=data, headers=self._get_headers())
+        if isinstance(response, dict) and response.get('code') == 0:
+            init.logger.info(response['data'])
+            # 需要二次认证
+            if response['data']['sign_key'] and response['data']['sign_check'] and kwargs.get('request_times') == 1:
+                sign_check = response['data']['sign_check'].split('-')
+                sign_val = file_sha1_by_range(kwargs.get('file_path', ''), int(sign_check[0]), int(sign_check[1])).upper()
+                return self.upload_file(
+                    file_name=kwargs.get('file_name', ''),
+                    file_size=kwargs.get('file_size', 0),    
+                    target=kwargs.get('target'),
+                    fileid=kwargs.get('fileid', ''),
+                    file_path=kwargs.get('file_path', ''),  # 添加这个参数
+                    sign_key=response['data']['sign_key'],
+                    sign_val=sign_val,
+                    request_times=2)
+            if response['data']['status'] != 2:
+                # 秒传失败，需要上传到阿里服务器时
+                callback_params = response['data'].get('callback', {})
+                if callback_params:
+                    # 获取上传token
+                    token_info = self.get_upload_token()
+                    if not token_info:
+                        init.logger.error("获取上传token失败")
+                        return False, False
+                    # 准备上传参数
+                    access_key_id = token_info['AccessKeyId']
+                    access_key_secret = token_info['AccessKeySecret']
+                    security_token = token_info['SecurityToken']
+                    endpoint = token_info['endpoint']
+                    bucket = response['data']['bucket']
+                    object_key = response['data']['object']
+                    pick_code = response['data']['pick_code']
+                    region = 'cn-shenzhen'
+                    callback_body_str = callback_params.get('callback', '{}')
+                    callback_vars_str = callback_params.get('callback_var', '{}')
+
+                    # 构造回调参数（callback）：指定回调地址和回调请求体，使用 Base64 编码
+                    callback=base64.b64encode(callback_body_str.encode()).decode()
+                    # 构造自定义变量（callback-var），使用 Base64 编码
+                    callback_var=base64.b64encode(callback_vars_str.encode()).decode()
+                    
+                    # 上传文件到阿里云OSS
+                    try:
+                        init.logger.info(f"开始上传文件: {kwargs.get('file_name', '')}")
+                        upload_result = upload_file_to_oss(
+                            access_key_id=access_key_id,
+                            access_key_secret=access_key_secret,
+                            security_token=security_token,
+                            endpoint=endpoint,
+                            bucket=bucket,
+                            file_path=kwargs.get('file_path', ''),
+                            key=object_key,
+                            region=region,
+                            callback=callback,
+                            callback_var=callback_var
+                        )
+                        
+                        if upload_result:
+                            init.logger.info(f"[{kwargs.get('file_name', '')}]上传成功！")
+                            return True, False
+                        else:
+                            init.logger.error(f"[{kwargs.get('file_name', '')}]上传失败!")
+                            return False, False
+                    except Exception as e:
+                        init.logger.error(f"上传文件到OSS时出错: {e}")
+                        return False, False
+            else:
+                init.logger.info(f"[{kwargs.get('file_name', '')}]秒传成功！")
+                return True, True
+        else:
+            init.logger.error(f"文件上传初始化失败: {response['message']}")
+            return False, False
+    
+    
+    @handle_token_expiry
+    def get_upload_token(self):
+        """获取上传文件的token"""
+        url = f"{self.base_url}/open/upload/get_token"
+        response = self._make_api_request('GET', url)
+        
+        if isinstance(response, dict) and response.get('code') == 0:
+            init.logger.info(f"获取上传token成功: {response}")
+            return response['data']
+        else:
+            init.logger.error(f"获取上传token失败: {response}")
+            return response
+        
+    @handle_token_expiry
+    def get_user_info(self):
+        """获取用户信息"""
+        url = f"{self.base_url}/open/user/info"
+        response = self._make_api_request('GET', url)
+        
+        if isinstance(response, dict) and response.get('code') == 0:
+            init.logger.info(f"获取用户信息成功: {response}")
+            return response['data']
+        else:
+            init.logger.error(f"获取用户信息失败: {response}")
+            if response['code'] == 40140125:
+                return response
+            return None
+    
+    
+    def welcome_message(self):
+        """欢迎消息"""
+        welcome_text = ""
+        user_info = self.get_user_info()
+        if user_info:
+            user_name = user_info.get('user_name')
+            total_space= user_info['rt_space_info']['all_total']['size_format']
+            used_space = user_info['rt_space_info']['all_use']['size_format']
+            remaining_space = user_info['rt_space_info']['all_remain']['size_format']
+            welcome_text = f"👋 {user_name}您好， 欢迎使用TGBot-115！\n"
+            welcome_text += f"总空间：{total_space} 已用：{used_space} 剩余：{remaining_space}！\n"
+        return welcome_text
+
+
+    def check_offline_download_success(self, url, offline_timeout=300):
+        time_out = 0
+        task_name = ""
+        while time_out < offline_timeout:
+            offline_info = self.get_offline_tasks()
+            for task in offline_info['tasks']:
+                # 判断任务的URL是否匹配
+                if task['url'] == url:
+                    # 检查任务状态
+                    if task['status'] == 2:
+                        task_name = task['name']
+                        init.logger.info(f"[{task_name}]离线下载任务成功！")
+                        return True, task_name
+                    else:
+                        time.sleep(5)
+                        time_out += 5
+                    break
+        init.logger.warn(f"[{task_name}]离线下载超时!")
+        return False, task_name
+    
+    def clear_failed_task(self, url):
+        offline_info = self.get_offline_tasks()
+        info_hash = ""
+        for task in offline_info['tasks']:
+            if task['url'] == url and task['status'] != 2:
+                info_hash = task['info_hash']
+                break
+        if info_hash:
+            # 删除离线文件
+            self.del_faild_offline_task(info_hash)
+        
+    def get_files_from_dir(self, path, file_type=4):
+        """获取指定目录下的所有文件"""
+        video_list = []
+        file_info = self.get_file_info(path)
+        if not file_info:
+            init.logger.error(f"获取目录信息失败: {file_info}")
+            return video_list
+        
+        # 文件类型；1.文档；2.图片；3.音乐；4.视频；5.压缩；6.应用；7.书籍
+        file_list = self.get_file_list(file_info['file_id'], file_type=file_type)
+        for file in file_list:
+            video_list.append(file['fn'])
+        return video_list
+    
+    def is_directory(self, path):
+        """检查路径是否为目录"""
+        file_info = self.get_file_info(path)
+        if not file_info:
+            init.logger.error(f"获取文件信息失败: {file_info}")
+            return False
+        
+        if file_info['file_category'] == '0':
+            return True
+        return False
+    
+    def create_dir_for_file(self, path, floder_name):
+        file_info = self.get_file_info(path)
+        if not file_info:
+            init.logger.error(f"获取目录信息失败: {file_info}")
+            return False
+        
+        # 创建文件夹
+        self.create_directory(file_info['file_id'], floder_name)
+        return True
+        
+    
+    def auto_clean(self, path):
+        # 开关关闭直接返回
+        if str(init.bot_config['clean_policy']['switch']).lower() == "off":
+            return
+        
+        file_info = self.get_file_info(path)
+        if not file_info:
+            init.logger.error(f"获取目录信息失败: {file_info}")
+            return
+        
+        file_list = self.get_file_list(file_info['file_id'], show_dir=1)
+        
+        # 换算字节大小
+        byte_size = 0
+        less_than = init.bot_config['clean_policy']['less_than']
+        if less_than is not None:
+            if str(less_than).upper().endswith("M"):
+                byte_size = int(less_than[:-1]) * 1024 * 1024
+            elif str(less_than).upper().endswith("K"):
+                byte_size = int(less_than[:-1]) * 1024
+            elif str(less_than).upper().endswith("G"):
+                byte_size = int(less_than[:-1]) * 1024 * 1024 * 1024
+                
+        fid_list = []
+        for file in file_list:
+            # 删除小于指定大小的文件
+            if file['fc'] == '1':
+                if file['fs'] < byte_size:
+                    fid_list.append(file['fid'])
+                    init.logger.info(f"[{file['fn']}]已添加到清理列表")
+            # 目录直接删除
+            else:
+                fid_list.append(file['fid'])
+                init.logger.info(f"[{file['fn']}]已添加到清理列表")
+        
+        if file_list:
+            file_ids = ",".join(fid_list)
+            self.delet_file(file_ids)
+            
+    @staticmethod
+    def save_token_to_file(access_token: str, refresh_token: str, file_path: str):
+        """将access_token和refresh_token保存到文件"""
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump({"access_token": access_token, "refresh_token": refresh_token}, f)
+        init.logger.info(f"Tokens saved to {file_path}")
+        
+    @staticmethod
+    def get_challenge() -> str:
+        # 生成随机字节（避免直接使用 ASCII 字符以确保安全随机性）
+        random_bytes = os.urandom(64)
+        # 转换为 URL-safe Base64，并移除填充字符（=）
+        verifier = base64.urlsafe_b64encode(random_bytes).rstrip(b'=').decode('utf-8')
+        # 确保符合规范（虽然 urlsafe_b64encode 已满足要求，此处做二次验证）
+        verifier = re.sub(r'[^A-Za-z0-9\-._~]', '', verifier)[:64]  # 限制长度为64字符
+        sha256_hash = hashlib.sha256(verifier.encode('utf-8')).digest()
+        # Base64 URL 安全编码并移除填充字符
+        challenge = base64.urlsafe_b64encode(sha256_hash).rstrip(b'=').decode('utf-8')
+        return verifier, challenge
+    
+def file_sha1(file_path):
+    with open(file_path, 'rb') as f:
+        return hashlib.sha1(f.read()).hexdigest()
+    
+def sha1_digest(file_path):
+    h = hashlib.sha1()
+    with Path(file_path).open('rb') as f:
+        for chunk in iter(lambda: f.read(128), b''):
+            h.update(chunk)
+            break
+    return h.hexdigest()
+
+
+def calculate_sha1(file_path):
+    """计算文件的SHA1哈希值"""
+    sha1 = hashlib.sha1()
+    try:
+        with open(file_path, 'rb') as f:
+            while True:
+                chunk = f.read(8192)
+                if not chunk:
+                    break
+                sha1.update(chunk)
+        return sha1.hexdigest()
+    except FileNotFoundError:
+        print(f"错误：文件未找到 -> {file_path}")
+        return None
+    
+def file_sha1_by_range(file_path, start, end):
+    """计算文件从start到end（含end）的SHA1"""
+    size = end - start + 1
+    sha1 = hashlib.sha1()
+    with open(file_path, "rb") as f:
+        f.seek(start)
+        data = f.read(size)
+        sha1.update(data)
+    return sha1.hexdigest()
+
+if __name__ == "__main__":
+    init.init_log()
+    init.load_yaml_config()
+    app = OpenAPI_115()
+    # app.auto_clean(f"{init.bot_config['offline_path']}/nyoshin-n1996")
+    # app.clear_failed_task("magnet:?xt=urn:btih:C506443C77A1F7EC3D18718F0DAC6AAA2BCE1FB6&dn=nyoshin-n1996")  # 示例URL
+    # if app.is_directory(f"{init.bot_config['offline_path']}"):
+    #     init.logger.info("这是一个目录")
+    # else:
+    #     init.logger.info("这不是一个目录")
+    # app.create_dir_for_video_file(f"{init.bot_config['offline_path']}/gc2048.com-agnes-sss.mp4")
+    # file_list = app.get_files_from_dir(f"{init.bot_config['offline_path']}/极品眼镜妹~【agnes-sss】清纯外表~长腿黑丝~白领装~全裸跳蛋")
+    # for file in file_list:
+    #     init.logger.info(f"找到视频文件: {file}")
+    # app.rename(f"{init.bot_config['offline_path']}/temp", "1111")
+    # if app.offline_download("magnet:?xt=urn:btih:C506443C77A1F7EC3D18718F0DAC6AAA2BCE1FB6&dn=nyoshin-n1996"):
+    #     init.logger.info("离线下载任务添加成功")
+    #     if app.check_offline_download_success("magnet:?xt=urn:btih:C506443C77A1F7EC3D18718F0DAC6AAA2BCE1FB6&dn=nyoshin-n1996"):
+    #         init.logger.info("离线下载任务成功")
+    #     else:
+    #         init.logger.error("离线下载任务失败或超时")
+    #         app.clear_failed_task("magnet:?xt=urn:btih:C506443C77A1F7EC3D18718F0DAC6AAA2BCE1FB6&dn=nyoshin-n1996")
+    # file_path = f"{init.TEMP}/20250713174710.mp4"
+    # file_size = os.path.getsize(file_path)
+    # file_name = os.path.basename(file_path)
+    # sha1_value = file_sha1(file_path)
+    # up_flg, bingo = app.upload_file(
+    #     target="/AV/国产直播精选",
+    #     file_name=file_name,
+    #     file_size=file_size,
+    #     fileid=sha1_value,
+    #     file_path=file_path,
+    #     request_times=1  # 第一次请求
+    # )
+    # if up_flg and bingo:
+    #     init.logger.info(f"秒传成功")
+    # elif up_flg and not bingo:
+    #     init.logger.error("文件上传成功")
+    # elif not up_flg and not bingo:
+    #     init.logger.error("文件上传失败")
+    # welcome_text = app.welcome_message()
+    # init.logger.info(welcome_text)
+    app.clear_cloud_task()  # 清理云端任务
+
+

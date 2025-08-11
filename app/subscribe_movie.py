@@ -3,6 +3,7 @@
 import requests
 import init
 from bs4 import BeautifulSoup
+import time
 from sqlitelib import *
 from download_handler import create_strm_file, notice_emby_scan_library
 from message_queue import add_task_to_queue
@@ -187,34 +188,34 @@ def get_response_from_api(url):
 
 def download_from_link(download_url, movie_name, save_path):
     try: 
-        if not init.initialize_115client():
-            init.logger.error(f"💀115Cookie已过期，请重新设置！")
-            return False
-        response, resource_name = init.client_115.offline_download(download_url)
-        if response.get('errno') is not None:
-            init.logger.error(f"❌离线遇到错误！error_type: {response.get('errtype')}！")
+        # 清除云端任务，避免重复下载
+        init.openapi_115.clear_cloud_task()
+        offline_success = init.openapi_115.offline_download(download_url)
+        if not offline_success:
+            init.logger.error(f"❌离线遇到错误！")
         else:
-            init.logger.info(f"✅[{resource_name}]添加离线成功")
-            download_success = init.client_115.check_offline_download_success(download_url, resource_name)
+            init.logger.info(f"✅[`{download_url}`]添加离线成功")
+            download_success, resource_name = init.openapi_115.check_offline_download_success(download_url)
             if download_success:
                 init.logger.info(f"✅[{resource_name}]离线下载完成")
-                if init.client_115.is_directory(f"{init.bot_config['offline_path']}/{resource_name}"):
+                time.sleep(1)
+                if init.openapi_115.is_directory(f"{init.bot_config['offline_path']}/{resource_name}"):
                     # 清除垃圾文件
-                    init.client_115.auto_clean(f"{init.bot_config['offline_path']}/{resource_name}")
+                    init.openapi_115.auto_clean(f"{init.bot_config['offline_path']}/{resource_name}")
                     # 重名名资源
-                    init.client_115.rename(f"{init.bot_config['offline_path']}/{resource_name}", f"{init.bot_config['offline_path']}/{movie_name}")
+                    init.openapi_115.rename(f"{init.bot_config['offline_path']}/{resource_name}", f"{init.bot_config['offline_path']}/{movie_name}")
                     # 移动文件
-                    init.client_115.move_file(f"{init.bot_config['offline_path']}/{movie_name}", save_path)
+                    init.openapi_115.move_file(f"{init.bot_config['offline_path']}/{movie_name}", save_path)
                 else:
                     # 创建文件夹
-                    init.client_115.create_folder(f"{init.bot_config['offline_path']}/{movie_name}")
+                    init.openapi_115.create_dir_for_file(f"{init.bot_config['offline_path']}", movie_name)
                     # 移动文件到番号文件夹
-                    init.client_115.move_file(f"{init.bot_config['offline_path']}/{resource_name}", f"{init.bot_config['offline_path']}/{movie_name}")
+                    init.openapi_115.move_file(f"{init.bot_config['offline_path']}/{resource_name}", f"{init.bot_config['offline_path']}/{movie_name}")
                     # 移动番号文件夹到指定目录
-                    init.client_115.move_file(f"{init.bot_config['offline_path']}/{movie_name}", save_path)
+                    init.openapi_115.move_file(f"{init.bot_config['offline_path']}/{movie_name}", save_path)
                 
                 # 读取目录下所有文件
-                file_list = init.client_115.get_files_from_dir(f"{save_path}/{movie_name}")
+                file_list = init.openapi_115.get_files_from_dir(f"{save_path}/{movie_name}")
                 # 创建软链
                 create_strm_file(f"{save_path}/{movie_name}", file_list)
                 # 通知Emby扫库
@@ -222,7 +223,8 @@ def download_from_link(download_url, movie_name, save_path):
                 return True
             else:
                 # 下载超时删除任务
-                init.client_115.clear_failed_task(download_url, resource_name)
+                init.openapi_115.clear_failed_task(download_url, resource_name)
+                init.logger.warn(f"😭离线下载超时，稍后将再次尝试!")
                 return False
     except Exception as e:
         init.logger.error(f"💀下载遇到错误: {str(e)}")
@@ -290,6 +292,11 @@ def update_subscribe(movie_name, post_url, download_url):
     tmdb_id = get_tmdb_id(movie_name)
     if tmdb_id:
         with SqlLiteLib() as sqlite:
+            select_sql = "SELECT is_download FROM sub_movie WHERE tmdb_id = ?"
+            is_download = sqlite.query_one(select_sql, (tmdb_id,))
+            if is_download == 1:
+                init.logger.info(f"订阅影片[{movie_name}]已完成下载，无需再次更新!")
+                return
             update_download_sql = "UPDATE sub_movie SET is_download = 1, post_url = ?, download_url = ? WHERE tmdb_id = ?"
             sqlite.execute_sql(update_download_sql, (post_url, download_url, tmdb_id,))
             init.logger.info(f"订阅影片[{movie_name}]已手动完成下载!")

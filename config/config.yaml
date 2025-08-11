@@ -1,11 +1,15 @@
 ############################################Telegram设置##################################
 # bot token
-# 机器人唯一Token，如果没有@BotFather创建
-bot_token: 7788556677:AAH1tq-vW6Mcf3Xdp8VrJfJUwL0nRaq3Ndl
-# 授权可以使用该bot的user_id，可以设置多个
-allowed_user_list:
-  - 1234567890
-  - 0987654321
+bot_token: 7788520866:AAH1tq-0NCSMfgZeh8VrHYJUwldsmPgq71w
+# bot_name
+bot_name: "@yhfw_115_bot"
+# 授权可以使用该bot的user_id
+allowed_user: 1012138188
+# telegram 的api信息地址(转存视频文件时需要)
+tg_api_id: 14334744
+tg_api_hash: e5dc45cda4d4f5ebe7d2d612efb62b1c
+############################################115开放平台##################################
+115_app_id: 100197559
 #############################################115离线设置###################################
 # 下载完成后自动删除文件夹中的广告文件
 clean_policy:
@@ -14,19 +18,12 @@ clean_policy:
   switch: "on"
   # 文件小于设置值则自动删除单位K,M,G
   less_than: 900M
-  # 文件类型，满足配置的文件类型则自动删除
-  file_type:
-    - zip
-    - jpg
-    - html
-    - txt
-    - doc
 
 # 115离线文件夹
 offline_path: /云下载
 
 # 设置分类文件夹
-# 分类文件夹设置只针对离线任务，离线下载完成后，会弹出需要移动到的分类文件夹，可以设置多个
+# 离线下载完成后，会弹出需要移动到的分类文件夹，可以设置多个
 # "name"为分类目录设置别名，"path" 115上的完整路径
 category_folder:
   # 电影下的分类目录
@@ -39,23 +36,37 @@ category_folder:
         path: /影视/电影/华语电影
       - name: 动画电影
         path: /影视/电影/动画电影
+      - name: ForLei影视
+        path: /影视/电影/ForLei
+  # 剧集下的分类
+  - name: series
+    display_name: 剧集
+    path_map:
+      - name: 美剧
+        path: /影视/剧集/美剧
+      - name: 国产剧
+        path: /影视/剧集/国产
+      - name: ForLei剧集
+        path: /影视/剧集/ForLei
+      - name: 综艺
+        path: /影视/综艺
   # AV
   - name: av
     display_name: AV
     path_map:
-      - name: 码の谜
-        path: /AV/有码
-      - name: 祼の真
-        path: /AV/无码
+      - name: 步兵精品
+        path: /AV/步兵精品
+      - name: JAV图书馆
+        path: /AV/JAV图书馆
+      - name: 无码流出
+        path: /AV/OutFlow
+      - name: 国产直播
+        path: /AV/国产直播精选 
 
-# 会自动订阅JavDB上没有磁力的影片
-# 关联定时任务：
-# 1、凌晨1：00更新订阅女优是否有新的未上映影片
-# 2、凌晨3：00查询当前已订阅影片是否更新磁力
+# 订阅会在指定路径自动创建以演员命名的文件夹
 subscribe:
   user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
-  javdb_cookie: "list_mode=h; theme=auto; over18=1;"
-  # 115的实际保存目录，订阅会在指定路径自动创建以演员命名的文件夹方便分类
+  javdb_cookie: "receive-cookie-deprecation=1; yandexuid=7653175931733840681; yuidss=7653175931733840681; i=dKFhyIGRvtophNXFpFogbhdwI4jYHQLn9hhE0zerL7MoRVR6fFKdfw14fFwdFhZTKFCsit5i5ITDSqE/s4sbtHfrGMw=; yashr=614322771734011119; sync_cookie_csrf=4261090947fake; yp=1747919581.yu.7653175931733840681; ymex=1750425181.oyu.7653175931733840681#1765547100.yrts.1734011100#1765547100.yrtsi.1734011100; sync_cookie_ok=synced; yabs-sid=1344203521747833181; bh=EkEiQ2hyb21pdW0iO3Y9IjEzNiIsICJHb29nbGUgQ2hyb21lIjt2PSIxMzYiLCAiTm90LkEvQnJhbmQiO3Y9Ijk5IhoDeDg2Ig0xMzYuMC43MTAzLjkzKgI/MDoJIldpbmRvd3MiQgYxOS4wLjBKAjY0UlkiQ2hyb21pdW0iO3Y9IjEzNi4wLjcxMDMuOTMiLCJHb29nbGUgQ2hyb21lIjt2PSIxMzYuMC43MTAzLjkzIiwiTm90LkEvQnJhbmQiO3Y9Ijk5LjAuMC4wImDdorfBBmoe3Mrh/wiS2KGxA5/P4eoD+/rw5w3r//32D8GjzYcI"
   path: /AV/女优
   # 订阅权重 设置高清，字幕的分数，订阅时会自动订阅得分最高的磁力
   sub_weight:
@@ -65,28 +76,26 @@ subscribe:
     subtitle_zh: 3
 
 #############################################软链接设置####################################
-# strm可以极大地减小请求115的次数避免风控，建议开启
-# 是否创建本地软链（非302）
+# 是否创建软链（非302）
 create_strm: True
 # CloudDrive2 挂载115的根目录
 mount_root: /CloudNAS/115
-# 软链接根目录，软链接目录可以看成是115挂载目录的镜像，也是Emby设置媒体库的目录，需要挂载到容器
+# 软链接根目录，软链接目录可以看成是115挂载目录的镜像
 strm_root: /media/115
 
 #############################################EMBY设置####################################
-# 有新资源入库时会同时Emby扫库，所有媒体库建议按加入日期到排序
 # EmbyServer地址 格式 http(s)://ip(域名):端口
-emby_server: http://192.168.1.100:8096
+emby_server: http://192.168.1.145:8096
 # Emby APIkey  Emby-->API秘钥-->新建
-api_key: 803e5l52v73649022m04by91d9301af2
+api_key: 647e5f52c98943299f04df91d7822af2
 
 #############################################电影订阅####################################
 # 自动订阅https://nullbr.online/上的资源，有满足要求的自动离线到115
 # 自动订阅需要申请app_id，参考申请方法
 # https://nullbr.online/api?title=00.%F0%9F%93%A3api%E5%BC%80%E6%94%BE%E8%AE%A1%E5%88%92
-x_app_id: xgwzQV8NQ
-x_api_key: uPNw4LFG6SaAwX4jvkERKmcYedJgjwVO
-# 订阅条件，中字和杜比必须同时满足才会订阅，分辨率按优先级订阅
+x_app_id: yYcjwJRq0
+x_api_key: DO2c8f7zYj21WFiWZcK32iLF8ZVlkePg
+# 订阅条件，全部满足才订阅
 sub_condition:
   # 包含中字
   zh_cn: true
@@ -96,5 +105,3 @@ sub_condition:
   resolution_priority:
     - 2160
     - 1080
-  
-

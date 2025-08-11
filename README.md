@@ -6,8 +6,14 @@
 一个基于 Python 的 Telegram 机器人，用于管理和控制 115 网盘，支持离线下载、视频上传、目录同步等功能。
 
 ## 更新日志
+v3.0.0
+- 重构底层接口，所有115请求全部对接开放平台，更快速更稳定！
+- 优化视频文件上传，支持大视频上传
+- 暂时关闭AV订阅功能，找到稳定可靠的接口后再更新
+
 v2.3.7
 - 修复手动下载订阅电影后，订阅没有自动取消的bug
+- 修复分享链接下载错误的问题 
 
 v2.3.6
 - 修复订阅电影有可能下载失败的错误
@@ -36,11 +42,6 @@ v2.3.0
 v2.2.0
 - 修复了部分bug
 
-## 上游项目
-本项目基于以下项目开发，特此鸣谢
-
-ChenyangGao/web-mount-packs/python-115-client
-
 ## 项目背景
 本项目源于个人日常观影体验的优化需求。作为一个影视爱好者，我采用 115网盘 + CloudDrive2 + Emby 的组合方案来管理和观看媒体内容。
 
@@ -66,7 +67,7 @@ ChenyangGao/web-mount-packs/python-115-client
   - 账号状态监控
 
 - 📥 **离线下载**
-  - 支持多种下载协议：磁力链接、115分享链接、迅雷、ed2k、FTP、HTTPS
+  - 支持多种下载协议：磁力链接、迅雷、ed2k、FTP、HTTPS
   - 自动分类存储
   - 广告文件自动清理
   - strm自动创建
@@ -79,10 +80,6 @@ ChenyangGao/web-mount-packs/python-115-client
 - 📺 **视频处理**
   - 视频文件自动上传至 115 (会消耗机场/VPS流量，慎用)
 
-- 📡 **订阅功能**
-  - AV女优订阅
-  - 电影订阅
-  - 自定义存储路径
 
 ## 快速开始
 
@@ -177,16 +174,27 @@ ChenyangGao/web-mount-packs/python-115-client
 - `/dl`      - 添加离线下载
 - `/sync`    - 同步目录并创建软链（会删除当前目录下所有文件，大规模同步可能导致风控，慎用！）
 - `/sm`      - 订阅电影
-- `/sub`     - 女优订阅
 - `/q`       - 取消当前会话
 
-### 注意事项
+### 115开放平台申请
 
-1. 首次使用需要设置 115 Cookie [获取115cookie](https://greasyfork.org/zh-CN/scripts/474231-115%E4%B8%8D%E5%A4%A7%E5%8A%A9%E6%89%8B-full)
-2. 离线下载支持多种格式，直接发送链接即可
-3. 同步目录时会清空对应的 STRM 目录
-4. 订阅功能会自动创建以演员命名的文件夹
+建议申请115开放平台获得更好的体验，申请地址：[115开放平台](https://open.115.com/)
+审核通过后将115_app_id填入到配置文件中。
 
+如不想使用115开放平台，请使用之前的镜像版本 qiqiandfei/115-bot:v2.3.7
+
+### 视频下载说明
+
+由于Tg机器人接口限制，无法下载超过20M的视频，因此如有视频下载需求需要借助tg客户端实现。
+
+Tg客户端session文件获取步骤：
+  - 1. 登录到Tg平台创建个人app申请 [https://my.telegram.org/auth](https://my.telegram.org/auth)
+  - 2. 获取app_id和app_hash
+  - 3. 将第二步中获取的id和hash填入到create_tg_session_file.py脚本
+  - 4. 执行create_tg_session_file脚本，获取到“user_session.session”文件
+  - 5. 将“user_session.session”放到config目录并挂载到容器
+
+如果不执行此步骤不会影响115-bot运行，只是无法下载超过20M的视频文件。
 
 ### 许可证
 ```

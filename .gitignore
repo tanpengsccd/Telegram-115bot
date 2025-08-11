@@ -32,10 +32,13 @@ ENV/
 
 # Project specific
 config/config.yaml
-config/cookie.txt
+config/user_session.session
 config/db.db
+config/115_tokens.json
 tmp/
 *.log
+images/qrcode.png
+
 
 # OS specific
 .DS_Store

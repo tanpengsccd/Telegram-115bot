@@ -144,6 +144,6 @@ def is_av_exist(div_list):
 
 
 if __name__ == '__main__':
-    cover_url = get_movie_cover("阿凡达")
-    # cover_url = get_av_cover("ipz-266")
+    # cover_url = get_movie_cover("阿凡达")
+    cover_url = get_av_cover("ipz-266")
     print(cover_url)

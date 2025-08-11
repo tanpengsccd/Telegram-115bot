@@ -333,37 +333,36 @@ def send_message2usr(number, sqlite):
 
 def download2spec_path(magnet_link, number, actor_name):
     try: 
+        # 清除云端任务，避免重复下载
+        init.openapi_115.clear_cloud_task()
         save_path = f"{init.bot_config['subscribe']['path']}/{actor_name}"
-        if not init.initialize_115client():
-            init.logger.error(f"💀115Cookie已过期，请重新设置！")
-            return False
         # 创建目录
-        init.client_115.create_folder(save_path)
-        response, resource_name = init.client_115.offline_download(magnet_link)
-        if response.get('errno') is not None:
-            init.logger.error(f"❌离线遇到错误！error_type: {response.get('errtype')}！")
+        init.openapi_115.create_dir_for_file(f"{init.bot_config['subscribe']['path']}", actor_name)
+        offline_success = init.openapi_115.offline_download(magnet_link)
+        if not offline_success:
+            init.logger.error(f"❌离线遇到错误！")
         else:
-            init.logger.info(f"✅[{resource_name}]添加离线成功")
-            download_success = init.client_115.check_offline_download_success(magnet_link, resource_name)
+            init.logger.info(f"✅[`{magnet_link}`]添加离线成功")
+            download_success, resource_name = init.openapi_115.check_offline_download_success(magnet_link)
             if download_success:
                 init.logger.info(f"✅[{resource_name}]离线下载完成")
-                if init.client_115.is_directory(f"{init.bot_config['offline_path']}/{resource_name}"):
+                if init.openapi_115.is_directory(f"{init.bot_config['offline_path']}/{resource_name}"):
                     # 清除垃圾文件
-                    init.client_115.auto_clean(f"{init.bot_config['offline_path']}/{resource_name}")
+                    init.openapi_115.auto_clean(f"{init.bot_config['offline_path']}/{resource_name}")
                     # 重名名资源
-                    init.client_115.rename(f"{init.bot_config['offline_path']}/{resource_name}", f"{init.bot_config['offline_path']}/{number}")
+                    init.openapi_115.rename(f"{init.bot_config['offline_path']}/{resource_name}", f"{init.bot_config['offline_path']}/{number}")
                     # 移动文件
-                    init.client_115.move_file(f"{init.bot_config['offline_path']}/{number}", save_path)
+                    init.openapi_115.move_file(f"{init.bot_config['offline_path']}/{number}", save_path)
                 else:
                     # 创建番号文件夹
-                    init.client_115.create_folder(f"{init.bot_config['offline_path']}/{number}")
+                    init.openapi_115.create_dir_for_file(f"{init.bot_config['offline_path']}", number)
                     # 移动文件到番号文件夹
-                    init.client_115.move_file(f"{init.bot_config['offline_path']}/{resource_name}", f"{init.bot_config['offline_path']}/{number}")
+                    init.openapi_115.move_file(f"{init.bot_config['offline_path']}/{resource_name}", f"{init.bot_config['offline_path']}/{number}")
                     # 移动番号文件夹到指定目录
-                    init.client_115.move_file(f"{init.bot_config['offline_path']}/{number}", save_path)
+                    init.openapi_115.move_file(f"{init.bot_config['offline_path']}/{number}", save_path)
                 
                 # 读取目录下所有文件
-                file_list = init.client_115.get_files_from_dir(f"{save_path}/{number}")
+                file_list = init.openapi_115.get_files_from_dir(f"{save_path}/{number}")
                 # 创建软链
                 create_strm_file(f"{save_path}/{number}", file_list)
                 # 通知Emby扫库
@@ -371,7 +370,7 @@ def download2spec_path(magnet_link, number, actor_name):
                 return True
             else:
                 # 下载超时删除任务
-                init.client_115.clear_failed_task(magnet_link, resource_name)
+                init.openapi_115.clear_failed_task(magnet_link, resource_name)
                 return False
     except Exception as e:
         init.logger.error(f"💀下载遇到错误: {str(e)}")
@@ -407,10 +406,10 @@ def escape_markdown_v2(text: str) -> str:
     
 
 
-# if __name__ == '__main__':
-#     init.init_log()
-#     actor_id = get_actor_id("三上悠亜")
-#     print(actor_id)
+if __name__ == '__main__':
+    init.init_log()
+    actor_id = get_actor_id("三上悠亜")
+    print(actor_id)
     # init.init()
     # magnet_link = get_magnet_by_number("OFJE-484")
     # print(magnet_link)

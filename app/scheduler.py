@@ -10,21 +10,13 @@ from subscribe_movie import schedule_movie
 from apscheduler.triggers.interval import IntervalTrigger
 
 scheduler = BlockingScheduler()
-
-def check_cookie():
-    message = "115cookie检测正常！"
-    if not init.initialize_115client():
-        message = "检测到115Cookie已过期，请重新设置！"
-        for item in init.bot_config['allowed_user_list']:
-            add_task_to_queue(item, "/app/images/male023.png", message)
-    init.logger.info(message)
     
 
 # 定义任务列表
 tasks = [
     # {"id": "actor_task", "func": schedule_actor, "hour": 1, "minute": 0},
     # {"id": "number_task", "func": schedule_number, "hour": 3, "minute": 0},
-    {"id": "cookie_check_task", "func": check_cookie, "interval": 4 * 60 * 60},
+    # {"id": "cookie_check_task", "func": check_cookie, "interval": 4 * 60 * 60},
     {"id": "subscribe_movie_task", "func": schedule_movie, "interval": 4 * 60 * 60},
 ]
 

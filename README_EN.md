@@ -6,8 +6,14 @@
 A Python-based Telegram bot for managing and controlling 115 Network Disk, supporting offline downloads, video uploads, directory synchronization, and more.
 
 ## Update Log
+v3.0.0
+- Refactored underlying interface, all 115 requests now use the open platform API for faster and more stable performance!
+- Optimized video file upload, supporting large video uploads
+- Temporarily disabled AV subscription feature, will update when a stable and reliable interface is found
+
 v2.3.7
-- Fixed the error that subscribe movie not cancel when manually download
+- Fixed the bug where subscription wasn't automatically cancelled after manually downloading subscribed movies
+- Fixed the error with downloading shared links
 
 v2.3.6
 - Fixed error with subscribe movie download
@@ -35,11 +41,6 @@ v2.3.0
 
 v2.2.0
 - Fixed various bugs
-
-## Upstream Project
-This project is based on the following project:
-
-ChenyangGao/web-mount-packs/python-115-client
 
 ## Background
 This project originated from the need to optimize personal daily viewing experience. As a movie enthusiast, I use the combination of 115 Network Disk + CloudDrive2 + Emby to manage and watch media content.
@@ -78,11 +79,6 @@ If you'd like to help improve this project, welcome to [join](https://t.me/qiqia
 
 - 📺 **Video Processing**
   - Automatic video upload to 115 (caution: consumes VPS bandwidth)
-
-- 📡 **Subscription Features**
-  - AV actress subscription
-  - Movie subscription
-  - Custom storage path
 
 ## Quick Start
 
@@ -178,17 +174,29 @@ Please refer to the comments in `config/config.yaml.example` for configuration d
 - `/dl`      - Add offline download
 - `/sync`    - Sync directory and create symlinks (will delete all files in current directory, use with caution!)
 - `/sm`      - Subscribe to movies
-- `/sub`     - AV actress subscription
 - `/q`       - Cancel current session
 
-### Notes
+### 115 Open Platform Application
 
-1. First-time use requires setting up 115 Cookie [Get 115 cookie](https://greasyfork.org/zh-CN/scripts/474231-115%E4%B8%8D%E5%A4%A7%E5%8A%A9%E6%89%8B-full)
-2. Offline download supports multiple formats, just send the link directly
-3. Directory sync will clear the corresponding STRM directory
-4. Subscription feature will automatically create folders named after actresses or movies
+It's recommended to apply for the 115 Open Platform for a better experience. Application URL: [115 Open Platform](https://open.115.com/)
+After approval, fill in the 115_app_id in the configuration file.
 
-## License
+If you don't want to use the 115 Open Platform, please use the previous image version: qiqiandfei/115-bot:v2.3.7
+
+### Video Download Instructions
+
+Due to Telegram bot API limitations, videos larger than 20MB cannot be downloaded. Therefore, if you need video download functionality, you need to use the Telegram client.
+
+Steps to get Telegram client session file:
+  - 1. Log in to Telegram platform and create a personal app application [https://my.telegram.org/auth](https://my.telegram.org/auth)
+  - 2. Get app_id and app_hash
+  - 3. Fill in the id and hash obtained in step 2 into the create_tg_session_file.py script
+  - 4. Execute the create_tg_session_file script to get the "user_session.session" file
+  - 5. Put "user_session.session" in the config directory and mount it to the container
+
+If you don't perform this step, it won't affect the 115-bot operation, you just won't be able to download video files larger than 20MB.
+
+### License
 ```
 MIT License
 
@@ -200,3 +208,6 @@ in the Software without restriction, including without limitation the rights
 to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 copies of the Software...
 ```
+
+## Buy me a coffee~
+![Buy me a coffee](https://alist.qiqiandfei.fun:8843/d/Syncthing/yufei/%E4%B8%AA%E4%BA%BA/%E8%B5%9E%E8%B5%8F.png)

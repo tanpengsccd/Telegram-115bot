@@ -5,9 +5,10 @@ from message_queue import add_task_to_queue, queue_worker
 from telegram import Update
 from telegram.ext import ContextTypes, CommandHandler, Application
 import init
+import time
 import asyncio
 import threading
-from cookie_handler import register_cookie_handlers
+from auth_handler import register_auth_handlers
 from download_handler import register_download_handlers
 from sync_handler import register_sync_handlers
 from video_handler import register_video_handlers
@@ -18,8 +19,8 @@ from subscribe_movie_handler import register_subscribe_movie_handlers
 
 def get_version(md_format=False):
     if md_format:
-        return r"v2\.3\.7"
-    return "v2.3.7"
+        return r"v3\.0\.0"
+    return "v3.0.0"
 
 def get_help_info():
     version = get_version()
@@ -27,7 +28,7 @@ def get_help_info():
             <b>115 Bot {version} 使用说明</b>
             <b>命令列表:</b>
             /start       - 显示帮助信息  
-            /cookie   - 设置115Cookie  
+            /auth     - 115扫码授权  
             /dl       - 添加离线下载
             /sync     - 同步目录，并创建软链
             /sm       - 订阅电影
@@ -35,14 +36,11 @@ def get_help_info():
             /q        - 取消当前会话  
             
             <b>功能说明:</b>  
-            - '/dl 下载链接' 即可添加离线下载，支持磁力、115分享、迅雷、ed2k、FTP、HTTPS等格式。  
+            - '/dl 下载链接' 即可添加离线下载，支持磁力、迅雷、ed2k、ftp、https等格式。  
             - 当发送视频文件时，机器人会将视频文件保存到115。
             - 同步目录会自动创建strm文件到本地的软链根目录(对应配置文件中的strm_root), 每次同步会清空对应的strm目录。如同步目录下文件较多，耗时会比较长，请耐心等待。
             - 订阅功能支持电影名称订阅，输入电影名称，当有资源更新时自动下载到指定目录并添加软链。
             - 订阅功能支持女优订阅，输入女优名称，当有新作品时自动下载到指定目录并添加软链。
-            
-            <b>提示：</b>
-            在使用115相关功能前，请先设置115Cookie！
         """
     return help_info
 
@@ -67,11 +65,9 @@ def start_async_loop():
 
 def send_start_message():
     version = get_version(md_format=True)
-    cookie_health = "115cookie检测正常！"
-    for item in init.bot_config['allowed_user_list']:
-        if not init.initialize_115client():
-            cookie_health = "检测到115Cookie已过期，请重新设置！"
-        add_task_to_queue(item, "/app/images/neuter010.png", fr"115 Bot {version} 启动成功！\[{cookie_health}\] *发送 `/start` 查看操作说明。*")
+    welcome_text = init.openapi_115.welcome_message()
+    if welcome_text:
+        add_task_to_queue(init.bot_config['allowed_user'], f"{init.IMAGE_PATH}/neuter010.png", fr"`{welcome_text}` 115 Bot {version} 启动成功！ *发送 `/start` 查看操作说明。*")
         
 
 def update_logger_level():
@@ -85,6 +81,22 @@ def update_logger_level():
 
 if __name__ == '__main__':
     init.init()
+    # 启动消息队列
+    message_thread = threading.Thread(target=start_async_loop, daemon=True)
+    message_thread.start()
+    # 等待消息队列准备就绪
+    import message_queue
+    max_wait = 30  # 最多等待30秒
+    wait_count = 0
+    while True:
+        if message_queue.global_loop is not None:
+            init.logger.info("消息队列线程已准备就绪！")
+            break
+        time.sleep(1)
+        wait_count += 1
+        if wait_count >= max_wait:
+            init.logger.error("消息队列线程未准备就绪，程序将退出。")
+            exit(1)
     init.logger.info("Starting bot with configuration:")
     init.logger.info(json.dumps(init.bot_config))
     # 调整telegram日志级别
@@ -95,8 +107,8 @@ if __name__ == '__main__':
     start_handler = CommandHandler('start', start)
     application.add_handler(start_handler)
 
-    # 注册Cookie
-    register_cookie_handlers(application)
+    # 注册Auth
+    register_auth_handlers(application)
     # 注册下载
     register_download_handlers(application)
     # 注册同步
@@ -110,12 +122,10 @@ if __name__ == '__main__':
 
     # 启动机器人轮询
     try:
-        # 启动消息队列
-        message_thread = threading.Thread(target=start_async_loop, daemon=True)
-        message_thread.start()
         # 启动订阅线程
         start_scheduler_in_thread()
         init.logger.info("订阅线程启动成功！")
+        time.sleep(3)  # 等待订阅线程启动
         send_start_message()
         application.run_polling()  # 阻塞运行
     except KeyboardInterrupt:
