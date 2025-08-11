@@ -13,7 +13,6 @@ v3.0.0
 
 v2.3.7
 - Fixed the bug where subscription wasn't automatically cancelled after manually downloading subscribed movies
-- Fixed the error with downloading shared links
 
 v2.3.6
 - Fixed error with subscribe movie download
