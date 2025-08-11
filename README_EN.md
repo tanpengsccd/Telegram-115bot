@@ -5,6 +5,12 @@
 
 A Python-based Telegram bot for managing and controlling 115 Network Disk, supporting offline downloads, video uploads, directory synchronization, and more.
 
+## Tg group
+
+Usage Issues & Bug Reports
+
+[Join](https://t.me/+FTPNla_7SCc3ZWVl)
+
 ## Update Log
 v3.0.0
 - Refactored underlying interface, all 115 requests now use the open platform API for faster and more stable performance!
