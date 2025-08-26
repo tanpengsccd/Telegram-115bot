@@ -97,32 +97,24 @@ def is_movie_exist(url, name_list):
 
 
 def get_av_cover(query):
-    """
-    封面抓取
-    :param query:
-    :return:
-    """
     title = ""
+    cover_url = ""
     headers = {"user-agent": init.USER_AGENT}
-    response = requests.get(headers=headers, url=f"https://javdb.com/search?q={query}&f=all")
-    if response.status_code != 200:
-        return ""
-    soup = BeautifulSoup(response.text, features="html.parser")
-    div_tags = soup.findAll('div')
-    if not is_av_exist(div_tags):
-        return ""
-    title_tags = soup.findAll('div', class_='video-title')
-    for title_tag in title_tags:
-        if title_tag.text.lower().find(query.lower()) == 0:
-            title = title_tag.text
-    img_tags = soup.findAll('img')
-    if not img_tags:
-        return ""
-    if len(img_tags) > 1 and 'src' not in img_tags[1].attrs:
-        return ""
-    cover_url = img_tags[1]['src']
-    return cover_url, title
-
+    response = requests.get(headers=headers, url=f"https://avbase.net/works?q={query}")
+    soup = BeautifulSoup(response.text, 'html.parser')
+    a_tag = soup.find('a', class_='text-md font-bold btn-ghost rounded-lg m-1 line-clamp-5')
+    if a_tag:
+        title = a_tag.get_text(strip=True)
+        link = f"https://avbase.net{a_tag['href']}"
+        response = requests.get(headers=headers, url=link)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        img_tag = soup.find('img', class_='max-w-full max-h-full')
+        if img_tag:
+            cover_url = img_tag['src']
+    if title and cover_url:
+        return cover_url, title
+    else:
+        return "", ""
 
 def is_av_exist(div_list):
     """
@@ -142,5 +134,5 @@ def is_av_exist(div_list):
 
 if __name__ == '__main__':
     # cover_url = get_movie_cover("阿凡达")
-    cover_url = get_av_cover("ipz-266")
-    print(cover_url)
+    cover_url, title = get_av_cover("ssis-999")
+    print(cover_url, title)

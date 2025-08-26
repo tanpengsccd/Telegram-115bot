@@ -28,6 +28,7 @@ async def start_av_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton(category["display_name"], callback_data=category["name"])] for category in
         init.bot_config['category_folder']
     ]
+    keyboard.append([InlineKeyboardButton("取消", callback_data="cancel")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     await context.bot.send_message(chat_id=update.effective_chat.id, text="❓请选择要保存到哪个分类：",
                                    reply_markup=reply_markup)
@@ -39,17 +40,8 @@ async def select_main_category(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
 
     selected_main_category = query.data
-    if selected_main_category == "return":
-        # 显示主分类
-        keyboard = [
-            [InlineKeyboardButton(category["display_name"], callback_data=category["name"])]
-            for category in init.bot_config['category_folder']
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await context.bot.send_message(chat_id=update.effective_chat.id,
-                                       text="❓请选择要保存到哪个分类：",
-                                       reply_markup=reply_markup)
-        return SELECT_MAIN_CATEGORY
+    if selected_main_category == "cancel":
+        return await quit_conversation(update, context)
     else:
         context.user_data["selected_main_category"] = selected_main_category
         sub_categories = [
@@ -60,7 +52,7 @@ async def select_main_category(update: Update, context: ContextTypes.DEFAULT_TYP
         keyboard = [
             [InlineKeyboardButton(category["name"], callback_data=category["path"])] for category in sub_categories
         ]
-        keyboard.append([InlineKeyboardButton("返回", callback_data="return")])
+        keyboard.append([InlineKeyboardButton("取消", callback_data="cancel")])
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await query.edit_message_text("❓请选择分类保存目录：", reply_markup=reply_markup)
@@ -74,8 +66,9 @@ async def select_sub_category(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # 获取用户选择的路径
     selected_path = query.data
-    if selected_path == "return":
-        return await select_main_category(update, context)
+    if selected_path == "cancel":
+        return await quit_conversation(update, context)
+    
     av_number = context.user_data["av_number"]
     context.user_data["selected_path"] = selected_path
     # 自动创建目录

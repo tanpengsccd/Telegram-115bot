@@ -44,17 +44,8 @@ async def select_main_category(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
 
     selected_main_category = query.data
-    if selected_main_category == "return":
-        # 显示主分类
-        keyboard = [
-            [InlineKeyboardButton(category["display_name"], callback_data=category["name"])]
-            for category in init.bot_config['category_folder']
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(
-                                       text="❓请选择要保存到哪个分类：",
-                                       reply_markup=reply_markup)
-        return SELECT_MAIN_CATEGORY
+    if selected_main_category == "cancel":
+        return await quit_conversation(update, context)
     else:
         context.user_data["selected_main_category"] = selected_main_category
         sub_categories = [
@@ -65,7 +56,7 @@ async def select_main_category(update: Update, context: ContextTypes.DEFAULT_TYP
         keyboard = [
             [InlineKeyboardButton(category["name"], callback_data=category["path"])] for category in sub_categories
         ]
-        keyboard.append([InlineKeyboardButton("返回", callback_data="return")])
+        keyboard.append([InlineKeyboardButton("取消", callback_data="cancel")])
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         await query.edit_message_text("❓请选择分类保存目录：", reply_markup=reply_markup)
@@ -79,8 +70,8 @@ async def select_sub_category(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # 获取用户选择的路径
     selected_path = query.data
-    if selected_path == "return":
-        return await select_main_category(update, context)
+    if selected_path == "cancel":
+        return await quit_conversation(update, context)
     context.user_data["selected_path"] = selected_path
     await query.edit_message_text(text=f"✅已选择保存目录：{selected_path}")
     
@@ -96,8 +87,7 @@ async def select_sub_category(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text(f"✅ {message}")
     else:
         await query.edit_message_text(f"❌ {message}")
-    
-    return SUBSCRIBE_OPERATE
+    return ConversationHandler.END
 
 
 
@@ -159,7 +149,10 @@ async def add_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton(category["display_name"], callback_data=category["name"])]
         for category in init.bot_config['category_folder']
     ]
+    keyboard.append([InlineKeyboardButton("取消", callback_data="cancel")])
     reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # 发送新消息而不是编辑消息，因为这是普通消息触发的函数
     await context.bot.send_message(
         chat_id=update.effective_chat.id, 
         text="❓请选择要保存到哪个分类：",
@@ -177,7 +170,7 @@ async def view_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     subscribe_text = subscribe_text.strip()
     init.logger.info(subscribe_text)
     if not movie_list:
-        subscribe_text = "订阅列表为空。"
+        subscribe_text = "订阅列表为空。"   
     await context.bot.send_message(chat_id=update.effective_chat.id, text=subscribe_text, parse_mode="MarkdownV2")
     return SUBSCRIBE_OPERATE
 
