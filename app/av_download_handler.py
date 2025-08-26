@@ -78,6 +78,8 @@ async def select_sub_category(update: Update, context: ContextTypes.DEFAULT_TYPE
         return await select_main_category(update, context)
     av_number = context.user_data["av_number"]
     context.user_data["selected_path"] = selected_path
+    # 自动创建目录
+    init.openapi_115.create_dir_recursive(selected_path)
     # 抓取磁力
     av_result = get_av_result(av_number)
     for item in av_result:

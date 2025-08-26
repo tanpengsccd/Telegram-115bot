@@ -188,6 +188,8 @@ def get_response_from_api(url):
 
 def download_from_link(download_url, movie_name, save_path):
     try: 
+        # 自动创建目录
+        init.openapi_115.create_dir_recursive(save_path)
         # 清除云端任务，避免重复下载
         init.openapi_115.clear_cloud_task()
         offline_success = init.openapi_115.offline_download_specify_path(download_url, save_path)
