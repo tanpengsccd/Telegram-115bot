@@ -80,6 +80,8 @@ def start_async_loop():
 
 def send_start_message():
     version = get_version()  
+    if init.openapi_115 is None:
+        return
     welcome_text = init.openapi_115.welcome_message()
     if welcome_text:
         formatted_message = f"""
@@ -156,6 +158,9 @@ if __name__ == '__main__':
 
     start_handler = CommandHandler('start', start)
     application.add_handler(start_handler)
+    
+    # 初始化115open对象
+    init.initialize_115open()
 
 
     # 注册Auth

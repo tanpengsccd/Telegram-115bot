@@ -124,7 +124,7 @@ class OpenAPI_115:
         if os.path.exists(save_path):
             os.remove(save_path)
         img.save(save_path)      # 保存为PNG
-        # 发送扫码通知
+        
         add_task_to_queue(sub_user, save_path, "请用115APP扫码授权！")
         
         time.sleep(5)

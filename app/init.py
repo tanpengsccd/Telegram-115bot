@@ -43,8 +43,7 @@ TOKEN_FILE = "/config/115_tokens.json"
 
 IMAGE_PATH = "/app/images"
 
-JAVDB_COOKIE = ""
-USER_AGENT = ""
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
 # 调试用
 # CONFIG_FILE = "config/config.yaml"
@@ -72,7 +71,7 @@ def load_yaml_config():
     读取配置文件
     :return:
     """
-    global bot_config, USER_AGENT, JAVDB_COOKIE, CONFIG_FILE
+    global bot_config, CONFIG_FILE
     yaml_path = CONFIG_FILE
     # 获取yaml文件名称
     try:
@@ -82,9 +81,6 @@ def load_yaml_config():
                 cfg = f.read()
                 f.close()
             bot_config = yaml.load(cfg, Loader=yaml.FullLoader)
-            USER_AGENT = bot_config['subscribe']['user_agent']
-            JAVDB_COOKIE = bot_config['subscribe']['javdb_cookie']
-            # return bot_config
         else:
             logger.error("Config file not found!")
     except Exception as e:
@@ -303,5 +299,4 @@ def init():
     load_yaml_config()
     create_tmp()
     init_db()
-    initialize_115open()
     initialize_tg_usr_client()

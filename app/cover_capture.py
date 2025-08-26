@@ -2,8 +2,7 @@
 
 import requests
 from bs4 import BeautifulSoup
-
-user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+import init
 
 
 def get_movie_cover(query):
@@ -12,11 +11,10 @@ def get_movie_cover(query):
     :param query:
     :return:
     """
-    global user_agent
     base_url = "https://www.themoviedb.org"
     url = f"https://www.themoviedb.org/search?query={query}"
     headers = {
-        "user-agent": user_agent,
+        "user-agent": init.USER_AGENT,
         "accept-language": "zh-CN"
     }
     response = requests.get(headers=headers, url=url)
@@ -104,9 +102,8 @@ def get_av_cover(query):
     :param query:
     :return:
     """
-    global user_agent
     title = ""
-    headers = {"user-agent": user_agent}
+    headers = {"user-agent": init.USER_AGENT}
     response = requests.get(headers=headers, url=f"https://javdb.com/search?q={query}&f=all")
     if response.status_code != 200:
         return ""
