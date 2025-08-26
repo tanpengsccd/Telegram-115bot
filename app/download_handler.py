@@ -13,10 +13,11 @@ import requests
 from enum import Enum
 from warnings import filterwarnings
 from telegram.warnings import PTBUserWarning
+from sqlitelib import *
 
 filterwarnings(action="ignore", message=r".*CallbackQueryHandler", category=PTBUserWarning)
 
-SELECT_MAIN_CATEGORY, SELECT_SUB_CATEGORY, SPECIFY_NAME = range(10, 13)
+SELECT_MAIN_CATEGORY, SELECT_SUB_CATEGORY, SPECIFY_NAME, HANDLE_DOWNLOAD_FAILURE = range(10, 14)
 
 class DownloadUrlType(Enum):
     ED2K = "ED2K"
@@ -109,7 +110,7 @@ async def select_sub_category(update: Update, context: ContextTypes.DEFAULT_TYPE
     # 下载磁力
     # 清除云端任务，避免重复下载
     init.openapi_115.clear_cloud_task()
-    offline_success = init.openapi_115.offline_download(link)
+    offline_success = init.openapi_115.offline_download_specify_path(link, selected_path)
     if not offline_success:
         await context.bot.send_message(chat_id=update.effective_chat.id,
                                     text=f"❌离线遇到错误！")
@@ -118,31 +119,24 @@ async def select_sub_category(update: Update, context: ContextTypes.DEFAULT_TYPE
                                     text=f"`{link}`  \n✅添加离线成功",
                                     parse_mode="MarkdownV2")
         download_success, resource_name = init.openapi_115.check_offline_download_success(link)
+        context.user_data["resource_name"] = resource_name
         if download_success:
-            context.user_data["resource_name"] = resource_name
             await context.bot.send_message(chat_id=update.effective_chat.id,
                                         text=f"`{resource_name}`  \n✅离线下载完成",
                                         parse_mode="MarkdownV2")
             time.sleep(1)
 
             # 如果下载的内容是目录
-            if init.openapi_115.is_directory(f"{init.bot_config['offline_path']}/{resource_name}"):
+            if init.openapi_115.is_directory(f"{selected_path}/{resource_name}"):
                 # 清除垃圾文件
-                init.openapi_115.auto_clean(f"{init.bot_config['offline_path']}/{resource_name}")
-                # 移动文件
-                init.openapi_115.move_file(f"{init.bot_config['offline_path']}/{resource_name}", selected_path)
+                init.openapi_115.auto_clean(f"{selected_path}/{resource_name}")
                 context.user_data["old_name"] = f"{selected_path}/{resource_name}"
             # 如果下载的内容是文件，为文件套一个文件夹
             else:
-                init.openapi_115.create_dir_for_file(f"{init.bot_config['offline_path']}/{resource_name}", "temp")
+                init.openapi_115.create_dir_for_file(f"{selected_path}", "temp")
                 # 移动文件到临时目录
-                init.openapi_115.move_file(f"{init.bot_config['offline_path']}/{resource_name}", f"{init.bot_config['offline_path']}/temp")
-                # 移动临时目录到指定分类目录
-                init.openapi_115.move_file(f"{init.bot_config['offline_path']}/temp", selected_path)
+                init.openapi_115.move_file(f"{selected_path}", f"{selected_path}/temp")
                 context.user_data["old_name"] = f"{selected_path}/temp"
-            await context.bot.send_message(chat_id=update.effective_chat.id,
-                                        text=f"`{resource_name}`  \n✅移动到分类文件夹\\[{selected_path}\\]成功",
-                                        parse_mode="MarkdownV2")
 
             await context.bot.send_message(chat_id=update.effective_chat.id,
                                         text=f"🈯请指定标准的资源名称，便于削刮。\\(点击资源名称自动复制\\)  \n\n**`{resource_name}`**",
@@ -152,10 +146,20 @@ async def select_sub_category(update: Update, context: ContextTypes.DEFAULT_TYPE
         else:
             # 下载超时删除任务
             init.openapi_115.clear_failed_task(link)
-            await context.bot.send_message(chat_id=update.effective_chat.id,
-                                        text=f"`{resource_name}`  \n😭离线下载超时，建议更换链接重试！",
-                                        parse_mode='MarkdownV2')
-            return ConversationHandler.END
+            # 下载超时时也显示选择对话框
+            keyboard = [
+                [InlineKeyboardButton("添加到重试列表", callback_data="add_to_retry_list")],
+                [InlineKeyboardButton("取消", callback_data="cancel_download")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"`{resource_name}`\n\n😭 离线下载超时，请选择后续操作：",
+                reply_markup=reply_markup,
+                parse_mode='MarkdownV2'
+            )
+            return HANDLE_DOWNLOAD_FAILURE
             
 
 
@@ -209,12 +213,51 @@ async def specify_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+async def handle_download_failure(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理下载失败时的用户选择"""
+    query = update.callback_query
+    await query.answer()
+    
+    choice = query.data
+    link = context.user_data.get("link", "")
+    selected_path = context.user_data.get("selected_path", "")
+    title = context.user_data.get("resource_name", "")
+    
+    if choice == "add_to_retry_list":
+        # 添加到离线任务列表
+        try:
+            # 添加保存到数据库的逻辑
+            save_failed_download_to_db(title, link, selected_path)
+            
+            # 这里可以添加到数据库或文件中保存重试任务
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"✅已将失败任务添加到重试列表，系统将自动重试！",
+                parse_mode="MarkdownV2"
+            )
+        except Exception as e:
+            init.logger.error(f"添加到重试列表失败: {e}")
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text="❌添加到重试列表失败，请稍后再试"
+            )
+        
+    elif choice == "cancel_download":
+        # 取消下载
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="✅已取消，可尝试更换磁力重试！"
+        )
+    
+    return ConversationHandler.END
+
+
 async def quit_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 检查是否是回调查询
     if update.callback_query:
-        await update.callback_query.edit_message_text(text="🚪用户退出本次会话.")
+        await update.callback_query.edit_message_text(text="🚪用户退出本次会话")
     else:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="🚪用户退出本次会话.")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="🚪用户退出本次会话")
     return ConversationHandler.END
 
 
@@ -298,12 +341,22 @@ def notice_emby_scan_library():
         init.logger.error(f"通知Emby扫库失败：{emby_response}")
 
 
-def check_cookie():
-    cookie_file = Path(init.COOKIE_FILE)
-    if not cookie_file.exists():
-        return False
-    else:
-        return True
+def save_failed_download_to_db(title, magnet, save_path):
+    """保存失败的下载任务到数据库"""
+    try:
+        with SqlLiteLib() as sqlite:
+            # 检查是否已存在相同的任务
+            check_sql = "SELECT * FROM offline_task WHERE magnet = ? AND save_path = ? AND title = ?"
+            existing = sqlite.query_one(check_sql, (magnet, save_path, title))
+            
+            if not existing:
+                sql = "INSERT INTO offline_task (title, magnet, save_path) VALUES (?, ?, ?)"
+                sqlite.execute_sql(sql, (title, magnet, save_path))
+                init.logger.info(f"[{title}]已添加到重试列表")
+    except Exception as e:
+        raise str(e)
+
+
 
 
 def register_download_handlers(application):
@@ -313,7 +366,8 @@ def register_download_handlers(application):
         states={
             SELECT_MAIN_CATEGORY: [CallbackQueryHandler(select_main_category)],
             SELECT_SUB_CATEGORY: [CallbackQueryHandler(select_sub_category)],
-            SPECIFY_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, specify_name)]
+            SPECIFY_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, specify_name)],
+            HANDLE_DOWNLOAD_FAILURE: [CallbackQueryHandler(handle_download_failure)]
         },
         fallbacks=[CommandHandler("q", quit_conversation)],
     )

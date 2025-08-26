@@ -2,7 +2,7 @@
 
 import json
 from message_queue import add_task_to_queue, queue_worker
-from telegram import Update
+from telegram import Update, BotCommand
 from telegram.ext import ContextTypes, CommandHandler, Application
 import init
 import time
@@ -12,41 +12,56 @@ from auth_handler import register_auth_handlers
 from download_handler import register_download_handlers
 from sync_handler import register_sync_handlers
 from video_handler import register_video_handlers
-from subscribe_handler import register_subscribe_handlers
 from scheduler import start_scheduler_in_thread
 from subscribe_movie_handler import register_subscribe_movie_handlers
+from av_download_handler import register_av_download_handlers
+from offline_task_handler import register_offline_task_handlers
 
 
 def get_version(md_format=False):
     if md_format:
-        return r"v3\.0\.0"
-    return "v3.0.0"
+        return r"v3\.1\.0"
+    return "v3.1.0"
 
 def get_help_info():
     version = get_version()
     help_info = f"""
-            <b>115 Bot {version} 使用说明</b>
-            <b>命令列表:</b>
-            /start       - 显示帮助信息  
-            /auth     - 115扫码授权  
-            /dl       - 添加离线下载
-            /sync     - 同步目录，并创建软链
-            /sm       - 订阅电影
-            /sub      - 女优订阅
-            /q        - 取消当前会话  
-            
-            <b>功能说明:</b>  
-            - '/dl 下载链接' 即可添加离线下载，支持磁力、迅雷、ed2k、ftp、https等格式。  
-            - 当发送视频文件时，机器人会将视频文件保存到115。
-            - 同步目录会自动创建strm文件到本地的软链根目录(对应配置文件中的strm_root), 每次同步会清空对应的strm目录。如同步目录下文件较多，耗时会比较长，请耐心等待。
-            - 订阅功能支持电影名称订阅，输入电影名称，当有资源更新时自动下载到指定目录并添加软链。
-            - 订阅功能支持女优订阅，输入女优名称，当有新作品时自动下载到指定目录并添加软链。
-        """
+<b>🍿 Telegram-115Bot {version} 使用手册</b>\n\n
+<b>🔧 命令列表</b>\n
+<code>/start</code> - 显示帮助信息\n
+<code>/auth</code> - <i>115扫码授权 (首次使用必选)</i>\n
+<code>/dl</code> - 添加离线下载 [磁力|ed2k|https]\n
+<code>/rl</code> - 查看重试列表\n
+<code>/av</code> - <i>下载番号资源 (自动匹配磁力)</i>\n
+<code>/sm</code> - 订阅电影\n
+<code>/sync</code> - 同步目录并创建软链\n
+<code>/q</code> - 取消当前会话\n\n
+<b>✨ 功能说明</b>\n
+<u>离线下载：</u>\n
+• 输入 <code>"/dl 下载链接"</code>\n
+• 支持磁力/迅雷/ed2k/https\n
+• 离线超时可选择添加到重试列表\n
+• 根据配置自动生成 <code>.strm</code> 软链文件\n\n
+<u>重试列表：</u>\n
+• 输入 <code>"/rl"</code>
+• 查看当前重试列表，可根据需要选择是否清空\n\n
+<u>AV资源：</u>\n
+• 输入 <code>"/av 番号"</code>
+• 自动检索磁力并离线,默认不生成软链（建议使用削刮工具生成软链）\n\n
+<u>电影订阅：</u>\n
+• 输入 <code>"/sm 电影名称"</code>
+• 自动监控资源更新, 发现更新后自动下载\n\n
+<u>目录同步：</u>\n
+• 输入 <code>"/sync"</code>\n
+• 选择目录后会在对应的目录创建strm软链\n\n
+<u>视频下载：</u>\n
+• 直接转发视频给机器人，选择保存目录即可保存到115\n
+"""
     return help_info
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_info = get_help_info()
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=help_info, parse_mode="html")
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=help_info, parse_mode="html", disable_web_page_preview=True)
 
 def start_async_loop():
     """启动异步事件循环的线程"""
@@ -64,11 +79,22 @@ def start_async_loop():
         init.logger.info("事件循环已关闭")
 
 def send_start_message():
-    version = get_version(md_format=True)
+    version = get_version()  
     welcome_text = init.openapi_115.welcome_message()
     if welcome_text:
-        add_task_to_queue(init.bot_config['allowed_user'], f"{init.IMAGE_PATH}/neuter010.png", fr"`{welcome_text}` 115 Bot {version} 启动成功！ *发送 `/start` 查看操作说明。*")
+        formatted_message = f"""
+`{welcome_text}`
+
+`Telegram-115Bot {version} 启动成功！`
+
+发送 `/start` 查看操作说明"""
         
+        add_task_to_queue(
+            init.bot_config['allowed_user'], 
+            f"{init.IMAGE_PATH}/neuter010.png", 
+            message=formatted_message
+        )
+
 
 def update_logger_level():
     import logging
@@ -77,6 +103,30 @@ def update_logger_level():
     logging.getLogger('telegram.ext.Application').setLevel(logging.WARNING)
     logging.getLogger('telegram.ext.Updater').setLevel(logging.WARNING)
     logging.getLogger('telegram.Bot').setLevel(logging.WARNING)
+    
+def get_bot_menu():
+    return  [
+        BotCommand("start", "获取帮助信息"),
+        BotCommand("auth", "115扫码授权"),
+        BotCommand("dl", "添加离线下载"),
+        BotCommand("rl", "查看重试列表"),
+        BotCommand("av", "指定番号下载"),
+        BotCommand("sm", "订阅电影"),
+        BotCommand("sync", "同步指定目录，并创建软链"),
+        BotCommand("q", "退出当前会话")]
+    
+
+async def set_bot_menu(application):
+    """异步设置Bot菜单"""
+    try:
+        await application.bot.set_my_commands(get_bot_menu())
+        init.logger.info("Bot菜单命令已设置!")
+    except Exception as e:
+        init.logger.error(f"设置Bot菜单失败: {e}")
+
+async def post_init(application):
+    """应用初始化后的回调"""
+    await set_bot_menu(application)
 
 
 if __name__ == '__main__':
@@ -102,21 +152,24 @@ if __name__ == '__main__':
     # 调整telegram日志级别
     update_logger_level()
     token = init.bot_config['bot_token']
-    application = Application.builder().token(token).build()
+    application = Application.builder().token(token).post_init(post_init).build()    
 
     start_handler = CommandHandler('start', start)
     application.add_handler(start_handler)
+
 
     # 注册Auth
     register_auth_handlers(application)
     # 注册下载
     register_download_handlers(application)
+    # 注册离线任务
+    register_offline_task_handlers(application)
     # 注册同步
     register_sync_handlers(application)
     # 注册视频
     register_video_handlers(application)
-    # 注册订阅
-    register_subscribe_handlers(application)
+    # 注册AV下载
+    register_av_download_handlers(application)
     # 注册电影订阅
     register_subscribe_movie_handlers(application)
 

@@ -6,7 +6,6 @@ from telegram.ext import CommandHandler, CallbackQueryHandler, MessageHandler, f
 import init
 from warnings import filterwarnings
 from telegram.warnings import PTBUserWarning
-import subscribe as sub2db
 import subscribe_movie as sm
 from sqlitelib import *
 
@@ -22,6 +21,10 @@ async def subscribe_moive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     usr_id = update.message.from_user.id
     if not init.check_user(usr_id):
         await update.message.reply_text("⚠️对不起，您无权使用115机器人！")
+        return ConversationHandler.END
+    if init.bot_config.get("x_app_id", "") == "your_app_id" or init.bot_config.get("x_app_id", "") == "" \
+        or init.bot_config.get("x_api_key", "") == "your_api_key" or init.bot_config.get("x_api_key", "") == "":
+        await update.message.reply_text("⚠️请先取得nullbrAPI接口的授权才能使用电影订阅功能！\n申请方法见配置文件。")
         return ConversationHandler.END
 
     keyboard = [
@@ -199,9 +202,9 @@ async def del_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def quit_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 检查是否是回调查询
     if update.callback_query:
-        await update.callback_query.edit_message_text(text="🚪用户退出本次会话.")
+        await update.callback_query.edit_message_text(text="🚪用户退出本次会话")
     else:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="🚪用户退出本次会话.")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="🚪用户退出本次会话")
     return ConversationHandler.END
 
 

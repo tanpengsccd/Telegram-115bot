@@ -190,7 +190,7 @@ def download_from_link(download_url, movie_name, save_path):
     try: 
         # 清除云端任务，避免重复下载
         init.openapi_115.clear_cloud_task()
-        offline_success = init.openapi_115.offline_download(download_url)
+        offline_success = init.openapi_115.offline_download_specify_path(download_url, save_path)
         if not offline_success:
             init.logger.error(f"❌离线遇到错误！")
         else:
@@ -199,21 +199,17 @@ def download_from_link(download_url, movie_name, save_path):
             if download_success:
                 init.logger.info(f"✅[{resource_name}]离线下载完成")
                 time.sleep(1)
-                if init.openapi_115.is_directory(f"{init.bot_config['offline_path']}/{resource_name}"):
+                if init.openapi_115.is_directory(f"{save_path}/{resource_name}"):
                     # 清除垃圾文件
-                    init.openapi_115.auto_clean(f"{init.bot_config['offline_path']}/{resource_name}")
+                    init.openapi_115.auto_clean(f"{save_path}/{resource_name}")
                     # 重名名资源
-                    init.openapi_115.rename(f"{init.bot_config['offline_path']}/{resource_name}", f"{init.bot_config['offline_path']}/{movie_name}")
-                    # 移动文件
-                    init.openapi_115.move_file(f"{init.bot_config['offline_path']}/{movie_name}", save_path)
+                    init.openapi_115.rename(f"{save_path}/{resource_name}", f"{save_path}/{movie_name}")
                 else:
                     # 创建文件夹
-                    init.openapi_115.create_dir_for_file(f"{init.bot_config['offline_path']}", movie_name)
-                    # 移动文件到番号文件夹
-                    init.openapi_115.move_file(f"{init.bot_config['offline_path']}/{resource_name}", f"{init.bot_config['offline_path']}/{movie_name}")
-                    # 移动番号文件夹到指定目录
-                    init.openapi_115.move_file(f"{init.bot_config['offline_path']}/{movie_name}", save_path)
-                
+                    init.openapi_115.create_dir_for_file(f"{save_path}", movie_name)
+                    # 移动文件到电影文件夹
+                    init.openapi_115.move_file(f"{save_path}/{resource_name}", f"{save_path}/{movie_name}")
+
                 # 读取目录下所有文件
                 file_list = init.openapi_115.get_files_from_dir(f"{save_path}/{movie_name}")
                 # 创建软链
@@ -223,7 +219,7 @@ def download_from_link(download_url, movie_name, save_path):
                 return True
             else:
                 # 下载超时删除任务
-                init.openapi_115.clear_failed_task(download_url, resource_name)
+                init.openapi_115.clear_failed_task(download_url)
                 init.logger.warn(f"😭离线下载超时，稍后将再次尝试!")
                 return False
     except Exception as e:

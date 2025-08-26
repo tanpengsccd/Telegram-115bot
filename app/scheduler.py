@@ -4,32 +4,33 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 import init
 import threading
-from message_queue import add_task_to_queue
-from subscribe import schedule_actor, schedule_number
 from subscribe_movie import schedule_movie
 from apscheduler.triggers.interval import IntervalTrigger
+from av_daily_update import av_daily_update, av_daily_retry, repair_leak
+from offline_task_handler import try_to_offline2115_again
 
 scheduler = BlockingScheduler()
-    
 
 # 定义任务列表
 tasks = [
-    # {"id": "actor_task", "func": schedule_actor, "hour": 1, "minute": 0},
-    # {"id": "number_task", "func": schedule_number, "hour": 3, "minute": 0},
-    # {"id": "cookie_check_task", "func": check_cookie, "interval": 4 * 60 * 60},
-    {"id": "subscribe_movie_task", "func": schedule_movie, "interval": 4 * 60 * 60},
+    {"id": "subscribe_movie_task", "func": schedule_movie, "interval": 4 * 60 * 60, "task_type": "interval"},
+    {"id": "av_daily_update_task", "func": av_daily_update, "hour": 20, "minute": 00, "task_type": "time"},
+    {"id": "av_daily_repair_task", "func": repair_leak, "hour": 23, "minute": 00, "task_type": "time"},
+    {"id": "av_daily_retry_task", "func": av_daily_retry, "interval": 6 * 60 * 60, "task_type": "interval"},
+    {"id": "retry_failed_downloads", "func": try_to_offline2115_again, "interval": 12 * 60 * 60, "task_type": "interval"}
+    
 ]
 
 def subscribe_scheduler():
     for task in tasks:
         if not scheduler.get_job(task["id"]):
-            if "cookie_check" in task["id"] or "subscribe_movie" in task["id"]:
+            if task['task_type'] == 'interval':
                 scheduler.add_job(
                     task["func"],
                     IntervalTrigger(seconds=task["interval"]),
                     id=task["id"],
                 )
-            else:
+            if task['task_type'] == 'time':
                 scheduler.add_job(
                     task["func"],
                     CronTrigger(hour=task["hour"], minute=task["minute"]),

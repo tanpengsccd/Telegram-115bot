@@ -114,9 +114,9 @@ async def select_sub_category_sync(update: Update, context: ContextTypes.DEFAULT
 async def quit_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 检查是否是回调查询
     if update.callback_query:
-        await update.callback_query.edit_message_text(text="🚪用户退出本次会话.")
+        await update.callback_query.edit_message_text(text="🚪用户退出本次会话")
     else:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="🚪用户退出本次会话.")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="🚪用户退出本次会话")
     return ConversationHandler.END
 
 

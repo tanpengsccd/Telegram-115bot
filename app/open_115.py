@@ -7,6 +7,7 @@ import init
 import qrcode
 import json
 import time
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from functools import wraps
 from message_queue import add_task_to_queue
@@ -33,23 +34,23 @@ def handle_token_expiry(func):
                             self.refresh_access_token()
                             continue
                         else:
-                            init.logger.error("Token刷新后仍然失败")
+                            init.logger.warn("Token刷新后仍然失败")
                             return response
                     elif response['code'] in [40140116, 40140119]:
                         # token已过期，需要重新授权
-                        init.logger.error("Access token 已过期，请重新授权！")
+                        init.logger.warn("Access token 已过期，请重新授权！")
                         return response
                     elif response['code'] == 40140118:
-                        init.logger.error("开发者认证已过期，请到115开放平台重新授权！")
+                        init.logger.warn("开发者认证已过期，请到115开放平台重新授权！")
                         return response
                     elif response['code'] == 40140110:
-                        init.logger.error("应用已过期，请到115开放平台重新授权！")
+                        init.logger.warn("应用已过期，请到115开放平台重新授权！")
                         return response
                     elif response['code'] == 40140109:
-                        init.logger.error("应用被停用，请到115开放平台查询详细信息！")
+                        init.logger.warn("应用被停用，请到115开放平台查询详细信息！")
                         return response
                     elif response['code'] == 40140108:
-                        init.logger.error("应用审核未通过，请稍后再试！")
+                        init.logger.warn("应用审核未通过，请稍后再试！")
                         return response
                 
                 # 成功或其他情况，直接返回
@@ -60,7 +61,7 @@ def handle_token_expiry(func):
                     init.logger.warn(f"API调用失败，正在重试: {e}")
                     continue
                 else:
-                    init.logger.error(f"API调用最终失败: {e}")
+                    init.logger.warn(f"API调用最终失败: {e}")
                     raise
         
         return response
@@ -77,7 +78,7 @@ class OpenAPI_115:
     def get_token(self):
         if not self.refresh_token or not self.access_token:
             if not os.path.exists(init.TOKEN_FILE):
-                init.logger.error("请先进行授权，获取refresh_token！")
+                init.logger.warn("请先进行授权，获取refresh_token！")
                 self.auth_pkce(init.bot_config['allowed_user'], init.bot_config['115_app_id'])
             with open(init.TOKEN_FILE, 'r', encoding='utf-8') as f:
                 tokens = json.load(f)
@@ -104,7 +105,7 @@ class OpenAPI_115:
             qr_data = res['data']['qrcode']
             sign = res['data']['sign']
         else:
-            init.logger.error(f"获取二维码失败: {response.status_code} - {response.text}")
+            init.logger.warn(f"获取二维码失败: {response.status_code} - {response.text}")
             raise Exception(f"Error: {response.status_code} - {response.text}")
         
         # 2. 创建QRCode对象并生成图片
@@ -165,7 +166,7 @@ class OpenAPI_115:
     def refresh_access_token(self):
         if not self.refresh_token:
             if not os.path.exists(init.TOKEN_FILE):
-                init.logger.error("请先进行授权，获取refresh_token！")
+                init.logger.warn("请先进行授权，获取refresh_token！")
                 add_task_to_queue(init.bot_config['allowed_user'], "/app/images/male023.png", "请先进行授权，获取refresh_token！")
                 return
             with open(init.TOKEN_FILE, 'r', encoding='utf-8') as f:
@@ -190,7 +191,7 @@ class OpenAPI_115:
             self.save_token_to_file(self.access_token, self.refresh_token, init.TOKEN_FILE)
             init.logger.info("Access token 更新成功.")
         else:
-            init.logger.error("Access token 更新失败!")
+            init.logger.warn("Access token 更新失败!")
             raise Exception(f"Failed to refresh access token: {response.text}")
         
 
@@ -214,7 +215,7 @@ class OpenAPI_115:
         if response.status_code == 200:
             return response.json()
         else:
-            init.logger.error(f"API请求失败: {response.status_code} - {response.text}")
+            init.logger.warn(f"API请求失败: {response.status_code} - {response.text}")
             return {"code": response.status_code, "message": response.text}
     
     @handle_token_expiry
@@ -228,7 +229,7 @@ class OpenAPI_115:
             init.logger.debug(f"获取文件信息成功: {response}")
             return response['data']
         else:
-            init.logger.error(f"获取文件信息失败: {response}")
+            init.logger.warn(f"获取文件信息失败: {response}")
             if response['code'] == 40140125:
                 return response
             return None
@@ -238,7 +239,29 @@ class OpenAPI_115:
         url = f"{self.base_url}/open/offline/add_task_urls"
         file_info = self.get_file_info(init.bot_config['offline_path'])
         if not file_info:
-            init.logger.error(f"获取离线下载目录信息失败: {file_info}")
+            init.logger.warn(f"获取离线下载目录信息失败: {file_info}")
+            return False
+        
+        data = {
+            "urls": download_url,
+            "wp_path_id": file_info['file_id']
+        }
+        response = self._make_api_request('POST', url, data=data, headers=self._get_headers())
+        if response['state'] == True:
+            init.logger.info(f"离线下载任务添加成功: {response['message']}")
+            return True
+        else:
+            init.logger.warn(f"离线下载任务添加失败: {response['message']}")
+            if response['code'] == 40140125:
+                return response
+            return None
+    
+    @handle_token_expiry
+    def offline_download_specify_path(self, download_url, save_path):
+        url = f"{self.base_url}/open/offline/add_task_urls"
+        file_info = self.get_file_info(save_path)
+        if not file_info:
+            init.logger.warn(f"获取离线保存目录信息失败: {file_info}")
             return False
         
         data = {
@@ -250,7 +273,7 @@ class OpenAPI_115:
             init.logger.info(f"离线下载任务添加成功: {response}")
             return True
         else:
-            init.logger.error(f"离线下载任务添加失败: {response}")
+            init.logger.warn(f"离线下载任务添加失败: {response['message']}")
             if response['code'] == 40140125:
                 return response
             return None
@@ -259,13 +282,13 @@ class OpenAPI_115:
     def get_offline_tasks(self):
         url = f"{self.base_url}/open/offline/get_task_list"
         response = self._make_api_request('GET', url)
-        if isinstance(response, dict) and 'data' in response:
-            init.logger.info(f"获取离线下载任务列表成功: {response}")
+        if isinstance(response, dict) and response.get('code') == 0 and 'data' in response:
             return response['data'] 
         else:
-            init.logger.error(f"获取离线下载任务列表失败: {response}")
-            if response['code'] == 40140125:
-                return response
+            init.logger.warn(f"获取离线下载任务列表失败: {response}")
+            if isinstance(response, dict) and response.get('code') == 40140125:
+                if response['code'] == 40140125:
+                    return response
             return None
     
     @handle_token_expiry
@@ -277,10 +300,10 @@ class OpenAPI_115:
         }
         response = self._make_api_request('POST', url, data=data, headers=self._get_headers())
         if response['state'] == True:
-            init.logger.info(f"清理失败的离线下载任务成功: {response}")
+            init.logger.info(f"清理失败的离线下载任务成功!")
             return True
         else:
-            init.logger.error(f"清理失败的离线下载任务失败: {response['message']}")
+            init.logger.warn(f"清理失败的离线下载任务失败: {response['message']}")
             if response['code'] == 40140125:
                 return response
             return None
@@ -294,10 +317,10 @@ class OpenAPI_115:
         }
         response = self._make_api_request('POST', url, data=data)
         if response['state'] == True:
-            init.logger.info(f"清理云端任务成功: {response}")
+            init.logger.info(f"清理云端任务成功！")
             return True
         else:
-            init.logger.error(f"清理云端任务失败: {response['message']}")
+            init.logger.warn(f"清理云端任务失败: {response['message']}")
             if response['code'] == 40140125:
                 return response
             return None
@@ -307,12 +330,12 @@ class OpenAPI_115:
         """移动文件或目录"""
         src_file_info = self.get_file_info(source_path)
         if not src_file_info:
-            init.logger.error(f"获取源文件信息失败: {src_file_info}")
+            init.logger.warn(f"获取源文件信息失败: {src_file_info}")
             return False
         
         dst_file_info = self.get_file_info(target_path)
         if not dst_file_info:
-            init.logger.error(f"获取目标文件信息失败: {dst_file_info}")
+            init.logger.warn(f"获取目标文件信息失败: {dst_file_info}")
             return False
         
         file_id = src_file_info['file_id']
@@ -327,7 +350,7 @@ class OpenAPI_115:
             init.logger.info(f"文件移动成功: [{source_path}] -> [{target_path}]")
             return True
         else:
-            init.logger.error(f"文件移动失败: {response['message']}")
+            init.logger.warn(f"文件移动失败: {response['message']}")
             if response['code'] == 40140125:
                 return response
             return None
@@ -337,7 +360,7 @@ class OpenAPI_115:
         """重命名文件或目录"""
         file_info = self.get_file_info(old_name)
         if not file_info:
-            init.logger.error(f"获取文件信息失败: {file_info}")
+            init.logger.warn(f"获取文件信息失败: {file_info}")
             return False
         
         file_id = file_info['file_id']
@@ -351,7 +374,7 @@ class OpenAPI_115:
             init.logger.info(f"文件重命名成功: [{old_name}] -> [{new_name}]")
             return True
         else:
-            init.logger.error(f"文件重命名失败: {response['message']}")
+            init.logger.warn(f"文件重命名失败: {response['message']}")
             if response['code'] == 40140125:
                 return response
             return None
@@ -374,7 +397,7 @@ class OpenAPI_115:
             init.logger.debug(f"获取文件列表成功: {response}")
             return response['data']
         else:
-            init.logger.error(f"获取文件列表失败: {response}")
+            init.logger.warn(f"获取文件列表失败: {response}")
             if response['code'] == 40140125:
                 return response
             return None
@@ -392,8 +415,11 @@ class OpenAPI_115:
         if isinstance(response, dict) and response.get('code') == 0:
             init.logger.info(f"目录创建成功: {file_name}")
             return True
+        elif response.get('code') == 20004:
+            init.logger.info(f"目录已存在: {file_name}")
+            return True
         else:
-            init.logger.error(f"目录创建失败: {response}")
+            init.logger.warn(f"目录创建失败: {response}")
             if response['code'] == 40140125:
                 return response
             return None
@@ -410,18 +436,38 @@ class OpenAPI_115:
             init.logger.info(f"文件或目录删除成功: {file_ids}")
             return True
         else:
-            init.logger.error(f"文件或目录删除失败: {response['message']}")
+            init.logger.warn(f"文件或目录删除失败: {response['message']}")
             if response['code'] == 40140125:
                 return response
             return None
-    
+        
+    @handle_token_expiry
+    def delete_single_file(self, path):
+        """删除单个文件"""
+        file_info = self.get_file_info(path)
+        if not file_info:
+            return None
+        url = f"{self.base_url}/open/ufile/delete"
+        data = {
+            "file_ids": [file_info['file_id']]
+        }
+        response = self._make_api_request('POST', url, data=data, headers=self._get_headers())
+        if response['state'] == True:
+            init.logger.info(f"文件(夹)删除成功: {path}")
+            return True
+        else:
+            init.logger.warn(f"文件(夹)删除失败: {response['message']}")
+            if response['code'] == 40140125:
+                return response
+            return None
+
     @handle_token_expiry
     def upload_file(self, **kwargs):
         """上传文件"""
         target = kwargs.get('target') 
         file_info = self.get_file_info(target)
         if not file_info:
-            init.logger.error(f"获取目标目录信息失败: {file_info}")
+            init.logger.warn(f"获取目标目录信息失败: {file_info}")
             return False, False
         target = f"U_1_{file_info['file_id']}"
         url = f"{self.base_url}/open/upload/init"
@@ -466,7 +512,7 @@ class OpenAPI_115:
                     # 获取上传token
                     token_info = self.get_upload_token()
                     if not token_info:
-                        init.logger.error("获取上传token失败")
+                        init.logger.warn("获取上传token失败")
                         return False, False
                     # 准备上传参数
                     access_key_id = token_info['AccessKeyId']
@@ -505,16 +551,16 @@ class OpenAPI_115:
                             init.logger.info(f"[{kwargs.get('file_name', '')}]上传成功！")
                             return True, False
                         else:
-                            init.logger.error(f"[{kwargs.get('file_name', '')}]上传失败!")
+                            init.logger.warn(f"[{kwargs.get('file_name', '')}]上传失败!")
                             return False, False
                     except Exception as e:
-                        init.logger.error(f"上传文件到OSS时出错: {e}")
+                        init.logger.warn(f"上传文件到OSS时出错: {e}")
                         return False, False
             else:
                 init.logger.info(f"[{kwargs.get('file_name', '')}]秒传成功！")
                 return True, True
         else:
-            init.logger.error(f"文件上传初始化失败: {response['message']}")
+            init.logger.warn(f"文件上传初始化失败: {response['message']}")
             return False, False
     
     
@@ -528,8 +574,11 @@ class OpenAPI_115:
             init.logger.info(f"获取上传token成功: {response}")
             return response['data']
         else:
-            init.logger.error(f"获取上传token失败: {response}")
-            return response
+            init.logger.warn(f"获取上传token失败: {response}")
+            if response['code'] == 40140125:
+                    return response
+        return None
+    
         
     @handle_token_expiry
     def get_user_info(self):
@@ -541,7 +590,22 @@ class OpenAPI_115:
             init.logger.info(f"获取用户信息成功: {response}")
             return response['data']
         else:
-            init.logger.error(f"获取用户信息失败: {response}")
+            init.logger.warn(f"获取用户信息失败: {response}")
+            if response['code'] == 40140125:
+                return response
+            return None
+        
+    @handle_token_expiry
+    def get_quota_info(self):
+        """获取配额信息"""
+        url = f"{self.base_url}/open/offline/get_quota_info"
+        response = self._make_api_request('GET', url)
+        
+        if isinstance(response, dict) and response.get('code') == 0:
+            init.logger.info(f"获取配额信息成功: {response}")
+            return response['data']
+        else:
+            init.logger.warn(f"获取配额信息失败: {response}")
             if response['code'] == 40140125:
                 return response
             return None
@@ -551,13 +615,18 @@ class OpenAPI_115:
         """欢迎消息"""
         welcome_text = ""
         user_info = self.get_user_info()
+        quota_info = self.get_quota_info()
         if user_info:
             user_name = user_info.get('user_name')
             total_space= user_info['rt_space_info']['all_total']['size_format']
             used_space = user_info['rt_space_info']['all_use']['size_format']
             remaining_space = user_info['rt_space_info']['all_remain']['size_format']
-            welcome_text = f"👋 {user_name}您好， 欢迎使用TGBot-115！\n"
-            welcome_text += f"总空间：{total_space} 已用：{used_space} 剩余：{remaining_space}！\n"
+            vip_info = user_info.get('vip_info', {})
+            expire_date = datetime.fromtimestamp(vip_info.get('expire', 0), tz=timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
+            welcome_text = f"👋 {user_name}您好， 欢迎使用Telegram-115Bot！\n"
+            welcome_text += f"会员等级：{vip_info.get('level_name', '')}；到期时间：{expire_date}\n"
+            welcome_text += f"总空间：{total_space} 已用：{used_space} 剩余：{remaining_space}\n"
+            welcome_text += f"离线配额：{quota_info['used']}/{quota_info['count']}\n"
         return welcome_text
 
 
@@ -566,12 +635,40 @@ class OpenAPI_115:
         task_name = ""
         while time_out < offline_timeout:
             offline_info = self.get_offline_tasks()
-            for task in offline_info['tasks']:
+            if not offline_info:
+                time.sleep(5)
+                time_out += 5
+                continue
+            
+            # 检查是否是错误响应
+            if isinstance(offline_info, dict) and 'code' in offline_info:
+                init.logger.warn(f"获取离线任务列表返回错误: {offline_info.get('message', '未知错误')}")
+                time.sleep(5)
+                time_out += 5
+                continue
+            
+            # 检查数据格式
+            if not isinstance(offline_info, dict) or 'tasks' not in offline_info:
+                init.logger.warn(f"离线任务数据格式异常")
+                time.sleep(5)
+                time_out += 5
+                continue
+            
+            tasks = offline_info['tasks']
+            if not isinstance(tasks, list):
+                init.logger.warn(f"任务列表格式异常")
+                time.sleep(5)
+                time_out += 5
+                continue
+            
+            for task in tasks:
+                if not isinstance(task, dict):
+                    continue
                 # 判断任务的URL是否匹配
-                if task['url'] == url:
+                if task.get('url') == url:
+                    task_name = task.get('name', '')
                     # 检查任务状态
-                    if task['status'] == 2:
-                        task_name = task['name']
+                    if task.get('status') == 2:
                         init.logger.info(f"[{task_name}]离线下载任务成功！")
                         return True, task_name
                     else:
@@ -581,23 +678,91 @@ class OpenAPI_115:
         init.logger.warn(f"[{task_name}]离线下载超时!")
         return False, task_name
     
+    def check_offline_download_success_no_waite(self, url):
+        offline_info = self.get_offline_tasks()
+        if not offline_info:
+            return False, ""
+        
+        # 检查是否是错误响应
+        if isinstance(offline_info, dict) and 'code' in offline_info:
+            init.logger.warn(f"获取离线任务列表返回错误: {offline_info.get('message', '未知错误')}")
+            return False, ""
+        
+        # 检查数据格式
+        if not isinstance(offline_info, dict) or 'tasks' not in offline_info:
+            init.logger.warn(f"离线任务数据格式异常")
+            return False, ""
+        
+        tasks = offline_info['tasks']
+        if not isinstance(tasks, list):
+            init.logger.warn(f"任务列表格式异常")
+            return False, ""
+        
+        task_name = ""
+        found_task = False
+        
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            # 判断任务的URL是否匹配
+            if task.get('url') == url:
+                task_name = task.get('name', '')
+                found_task = True
+                # 检查任务状态
+                if task.get('status') == 2:
+                    init.logger.info(f"[{task_name}]离线下载任务成功！")
+                    return True, task_name
+                break  # 找到任务就退出循环，继续检查状态
+        
+        if found_task:
+            init.logger.warn(f"[{task_name}]离线下载任务未完成!")
+        else:
+            init.logger.warn(f"未找到匹配的离线下载任务: {url}")
+        
+        return False, task_name
+    
+    
     def clear_failed_task(self, url):
         offline_info = self.get_offline_tasks()
+        
+        # 防护性检查：确保offline_info是有效的字典且包含tasks键
+        if not offline_info:
+            init.logger.warn(f"获取离线任务列表失败，无法清理失败任务: {url}")
+            return
+        
+        # 检查是否是错误响应（包含code字段）
+        if isinstance(offline_info, dict) and 'code' in offline_info:
+            init.logger.warn(f"获取离线任务列表返回错误: {offline_info.get('message', '未知错误')}")
+            return
+        
+        # 检查是否包含tasks键且tasks是列表
+        if not isinstance(offline_info, dict) or 'tasks' not in offline_info:
+            init.logger.warn(f"离线任务数据格式异常，无法清理失败任务: {url}")
+            return
+        
+        tasks = offline_info['tasks']
+        if not isinstance(tasks, list):
+            init.logger.warn(f"任务列表格式异常，无法清理失败任务: {url}")
+            return
+        
         info_hash = ""
-        for task in offline_info['tasks']:
-            if task['url'] == url and task['status'] != 2:
-                info_hash = task['info_hash']
+        for task in tasks:
+            if isinstance(task, dict) and task.get('url') == url and task.get('status') != 2:
+                info_hash = task.get('info_hash', '')
                 break
+        
         if info_hash:
             # 删除离线文件
             self.del_faild_offline_task(info_hash)
+        else:
+            init.logger.info(f"未找到需要清理的失败任务: {url}")
         
     def get_files_from_dir(self, path, file_type=4):
         """获取指定目录下的所有文件"""
         video_list = []
         file_info = self.get_file_info(path)
         if not file_info:
-            init.logger.error(f"获取目录信息失败: {file_info}")
+            init.logger.warn(f"获取目录信息失败: {file_info}")
             return video_list
         
         # 文件类型；1.文档；2.图片；3.音乐；4.视频；5.压缩；6.应用；7.书籍
@@ -610,7 +775,7 @@ class OpenAPI_115:
         """检查路径是否为目录"""
         file_info = self.get_file_info(path)
         if not file_info:
-            init.logger.error(f"获取文件信息失败: {file_info}")
+            init.logger.warn(f"获取文件信息失败: {file_info}")
             return False
         
         if file_info['file_category'] == '0':
@@ -620,7 +785,7 @@ class OpenAPI_115:
     def create_dir_for_file(self, path, floder_name):
         file_info = self.get_file_info(path)
         if not file_info:
-            init.logger.error(f"获取目录信息失败: {file_info}")
+            init.logger.warn(f"获取目录信息失败: {file_info}")
             return False
         
         # 创建文件夹
@@ -635,7 +800,7 @@ class OpenAPI_115:
         
         file_info = self.get_file_info(path)
         if not file_info:
-            init.logger.error(f"获取目录信息失败: {file_info}")
+            init.logger.warn(f"获取目录信息失败: {file_info}")
             return
         
         file_list = self.get_file_list(file_info['file_id'], show_dir=1)
@@ -666,6 +831,36 @@ class OpenAPI_115:
         if file_list:
             file_ids = ",".join(fid_list)
             self.delet_file(file_ids)
+    
+    def create_dir_recursive(self, path):
+        """递归创建目录"""
+        res = self.get_file_info(path)
+        if res:
+            init.logger.info(f"[{path}]目录已存在！")
+            return
+        path_list= get_parent_paths(path)
+        last_path = ""
+        for index, item in enumerate(path_list):
+            res = self.get_file_info(item)  # 确保目录存在
+            if res:
+                last_path = item
+            else:
+                if index == 0:
+                    if item.startswith("/"):
+                        self.create_directory(0, item[1:])
+                    else:
+                        self.create_directory(0, item)
+                    time.sleep(1)  # 等待目录创建完成
+                    last_path = item
+                if index > 0:
+                    file_info = self.get_file_info(last_path)
+                    self.create_directory(file_info['file_id'], os.path.basename(item))
+                    time.sleep(1)
+                    last_path = item
+                    
+        init.logger.info(f"目录[{path}]创建成功！")
+
+        
             
     @staticmethod
     def save_token_to_file(access_token: str, refresh_token: str, file_path: str):
@@ -725,10 +920,44 @@ def file_sha1_by_range(file_path, start, end):
         sha1.update(data)
     return sha1.hexdigest()
 
+
+def get_parent_paths(path):
+    """
+    获取路径的所有父级路径列表
+    :param path: 输入路径，如 "/AV/rigeng/111/222"
+    :return: 父级路径列表，如 ["/AV", "/AV/rigeng", "/AV/rigeng/111"]
+    """
+    # 规范化路径（处理多余的斜杠等问题）
+    normalized_path = os.path.normpath(path)
+    
+    # 分割路径
+    parts = normalized_path.split(os.sep)
+    
+    # 处理Unix系统的根目录情况
+    if parts[0] == '':
+        parts[0] = os.sep
+    
+    # 逐步构建路径
+    result = []
+    current_path = parts[0] if parts[0] == os.sep else ""
+    
+    for part in parts[1:]:
+        current_path = os.path.join(current_path, part)
+        result.append(current_path)
+    
+    return result
+
+
+
+
+
 if __name__ == "__main__":
     init.init_log()
     init.load_yaml_config()
     app = OpenAPI_115()
+    quota_info = app.get_quota_info()
+    print(f"离线下载配额: {quota_info['used']}/{quota_info['count']}")
+
     # app.auto_clean(f"{init.bot_config['offline_path']}/nyoshin-n1996")
     # app.clear_failed_task("magnet:?xt=urn:btih:C506443C77A1F7EC3D18718F0DAC6AAA2BCE1FB6&dn=nyoshin-n1996")  # 示例URL
     # if app.is_directory(f"{init.bot_config['offline_path']}"):
@@ -767,6 +996,6 @@ if __name__ == "__main__":
     #     init.logger.error("文件上传失败")
     # welcome_text = app.welcome_message()
     # init.logger.info(welcome_text)
-    app.clear_cloud_task()  # 清理云端任务
+    # app.clear_cloud_task()  # 清理云端任务
 
 

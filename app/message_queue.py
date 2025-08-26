@@ -10,7 +10,7 @@ message_queue = asyncio.Queue()
 global_loop = None
 
 
-def add_task_to_queue(sub_user, post_url, message):
+def add_task_to_queue(sub_user, post_url, message, keyboard=None):
     """向消息队列中添加任务（线程安全）"""
     global global_loop
     if global_loop is None:
@@ -19,10 +19,10 @@ def add_task_to_queue(sub_user, post_url, message):
     
     try:
         future = asyncio.run_coroutine_threadsafe(
-            message_queue.put((sub_user, post_url, message)),
+            message_queue.put((sub_user, post_url, message, keyboard)),
             global_loop 
         )
-        future.result(timeout=10)  # 等待任务添加到队列，设置超时时间
+        future.result(timeout=30)  # 等待任务添加到队列，设置超时时间
         init.logger.info(f"任务已添加到队列: {sub_user}, {post_url}, {message}")
         return True
     except TimeoutError:
@@ -43,15 +43,36 @@ async def queue_worker(loop, token):
     while True:
         try:
             # 从队列获取任务
-            sub_user, post_url, message = await message_queue.get()
+            task_data = await message_queue.get()
+            
+            # 兼容旧版本的三参数格式
+            if len(task_data) == 3:
+                sub_user, post_url, message = task_data
+                keyboard = None
+            else:
+                sub_user, post_url, message, keyboard = task_data
+                
             init.logger.info(f"取出任务: 用户[{sub_user}], 链接[{post_url}], 消息[{message}]")
-            # 执行发送
-            await bot.send_photo(
-                chat_id=sub_user,
-                photo=post_url,
-                caption=message,
-                parse_mode="MarkdownV2"
-            )
+            
+            # 根据是否有图片和键盘选择发送方式
+            if post_url:
+                # 发送图片消息
+                await bot.send_photo(
+                    chat_id=sub_user,
+                    photo=post_url,
+                    caption=message,
+                    parse_mode="MarkdownV2",
+                    reply_markup=keyboard
+                )
+            else:
+                # 发送纯文本消息
+                await bot.send_message(
+                    chat_id=sub_user,
+                    text=message,
+                    parse_mode="MarkdownV2",
+                    reply_markup=keyboard
+                )
+                
             init.logger.info(f"消息已发送至 {sub_user}")
             # 标记任务完成
             message_queue.task_done()

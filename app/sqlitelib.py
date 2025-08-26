@@ -35,6 +35,17 @@ class SqlLiteLib:
         res_list = self.cursor.fetchall()
         return res_list
     
+    def query_all(self, sql: str, params: tuple = ()):
+        """查询所有记录，返回字典列表"""
+        try:
+            self.cursor.execute(sql, params)
+            columns = [description[0] for description in self.cursor.description]
+            rows = self.cursor.fetchall()
+            return [dict(zip(columns, row)) for row in rows]
+        except Exception as e:
+            self.logger.error(f"执行查询时发生错误: {e}, sql: {sql}")
+            return []
+    
     def query_one(self, sql: str, params=None):
         try:
             self.cursor.execute(sql, params or ())
@@ -42,6 +53,7 @@ class SqlLiteLib:
             return res[0] if res else None
         except Exception as e:
             self.logger.error(f"执行查询时发生错误: {e}, sql: {sql}")
+            return None
             
     def query_row(self, sql: str, params=None):
         try:

@@ -38,7 +38,7 @@ async def auth_pkce(update: Update):
 
 
 async def quit_conversation(update: Update):
-    await update.message.reply_text("🚪用户退出本次会话.")
+    await update.message.reply_text("🚪用户退出本次会话")
     return ConversationHandler.END
 
 

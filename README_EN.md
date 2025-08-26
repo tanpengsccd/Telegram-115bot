@@ -12,6 +12,13 @@ Usage Issues & Bug Reports
 [Join](https://t.me/+FTPNla_7SCc3ZWVl)
 
 ## Update Log
+v3.1.0
+- Removed AV subscription feature, added AV daily update functionality that automatically updates and downloads the latest resources to 115 daily, can be enabled or disabled in the configuration file. If the offline download fails, the bot will retry every 6 hours until successful.
+- Added direct AV number offline download feature, input 'av ipz-266' to automatically download to 115, eliminating the need to search for magnet links
+- A new “Retry List” feature has been added. When offline access fails, you can add it to the retry list, and the robot will attempt offline access again after a fixed interval. When you no longer need it, you can clear this list at any time.
+- Added bot menu
+- Code optimization and bug fixes
+
 v3.0.0
 - Refactored underlying interface, all 115 requests now use the open platform API for faster and more stable performance!
 - Optimized video file upload, supporting large video uploads
@@ -67,23 +74,33 @@ If you'd like to help improve this project, welcome to [join](https://t.me/qiqia
 
 ## Features
 
-- 🔐 **115 Account Management**
-  - Cookie setup and verification
-  - Account status monitoring
+- � **115 Account Management**
+  - Based on 115 Open Platform
+  - Uses official API for stable and reliable service
 
-- 📥 **Offline Download**
-  - Support multiple download protocols: Magnet links, 115 share links, Thunder, ed2k, FTP, HTTPS
-  - Automatic category storage
+- ⬇️ **Offline Download**
+  - Support multiple download protocols: Magnet links, Thunder, ed2k, FTP, HTTPS
+  - Intelligent automatic category storage
   - Advertisement file cleanup
-  - Automatic STRM creation
+  - Automatic STRM file creation
+
+- 🎬 **AV Number Download**
+  - Input AV number to automatically download offline
+  - Intelligent advertisement file cleanup
+
+- 🎭 **Movie Subscription**
+  - Support automatic movie resource subscription
+  - Automatic offline download when new resources are available
+  - Intelligent advertisement file cleanup
+  - Automatic STRM file creation
 
 - 🔄 **Directory Synchronization**
   - Automatic local symlink creation
-  - STRM file generation
-  - Emby media library integration
+  - STRM file batch generation
+  - Seamless Emby media library integration
 
-- 📺 **Video Processing**
-  - Automatic video upload to 115 (caution: consumes VPS bandwidth)
+- � **Video Processing**
+  - Support automatic video file upload to 115 Network Disk (Note: Consumes VPS/proxy traffic, use with caution)
 
 ## Quick Start
 
@@ -133,22 +150,21 @@ If you'd like to help improve this project, welcome to [join](https://t.me/qiqia
      115bot:latest
    ```
    
-   **Compose (recommended)**
+   **Docker Compose (Recommended)**
    ```yaml
-   # docker-compose.yaml
    version: '3.8'
    services:
-     115-bot:
-       container_name: tg-bot-115
-       environment:
-         TZ: Asia/Shanghai
-       image: qiqiandfei/115-bot:latest
-       # privileged: True
-       restart: unless-stopped
-       volumes:
-         - $PWD/config:/config
-         - /path/to/media:/media # Emby media library directory (symlink directory)
-         - /path/to/CloudNAS:/CloudNAS:rslave # CloudDrive2 mount directory
+    115-bot:
+      container_name: tg-bot-115
+      environment:
+        TZ: Asia/Shanghai
+      image: qiqiandfei/115-bot:latest
+      # privileged: True
+      restart: unless-stopped
+      volumes:
+        - $PWD/config:/config
+        - /path/to/media:/media # Emby media library directory (symlink directory)
+        - /path/to/CloudNAS:/CloudNAS:rslave # CloudDrive2 mount directory
    ```
 
 ## Configuration
@@ -175,31 +191,45 @@ Please refer to the comments in `config/config.yaml.example` for configuration d
 ### Basic Commands
 
 - `/start`   - Show help information
-- `/cookie`  - Set 115 Cookie
+- `/auth`    - 115 authorization setup
 - `/dl`      - Add offline download
-- `/sync`    - Sync directory and create symlinks (will delete all files in current directory, use with caution!)
+- `/av`      - AV number download
+- `/sync`    - Sync directory and create symlinks
 - `/sm`      - Subscribe to movies
 - `/q`       - Cancel current session
 
 ### 115 Open Platform Application
 
-It's recommended to apply for the 115 Open Platform for a better experience. Application URL: [115 Open Platform](https://open.115.com/)
-After approval, fill in the 115_app_id in the configuration file.
+**Strongly recommend applying for 115 Open Platform** for better user experience:
+- Application URL: [115 Open Platform](https://open.115.com/)
+- After approval, fill in the `115_app_id` in the configuration file
 
-If you don't want to use the 115 Open Platform, please use the previous image version: qiqiandfei/115-bot:v2.3.7
+If you don't want to use the 115 Open Platform, please use the previous image version `qiqiandfei/115-bot:v2.3.7`
 
-### Video Download Instructions
+### Video Download Configuration
 
-Due to Telegram bot API limitations, videos larger than 20MB cannot be downloaded. Therefore, if you need video download functionality, you need to use the Telegram client.
+Due to Telegram Bot API limitations, videos larger than 20MB cannot be downloaded. To download large videos, please configure the Telegram client:
 
-Steps to get Telegram client session file:
-  - 1. Log in to Telegram platform and create a personal app application [https://my.telegram.org/auth](https://my.telegram.org/auth)
-  - 2. Get app_id and app_hash
-  - 3. Fill in the id and hash obtained in step 2 into the create_tg_session_file.py script
-  - 4. Execute the create_tg_session_file script to get the "user_session.session" file
-  - 5. Put "user_session.session" in the config directory and mount it to the container
+#### Configuration
+Telegram API application address: [Telegram Development Platform](https://my.telegram.org/auth)
 
-If you don't perform this step, it won't affect the 115-bot operation, you just won't be able to download video files larger than 20MB.
+When your application is successful, you will receive a “tg_api_id” and “tg_api_hash”.
+
+Ensure that these three parameters are correct:
+```
+# bot_name
+bot_name: "@yourbotname"
+
+# telegram api info
+tg_api_id: 1122334
+tg_api_hash: 1yh3j4k9dsk0fj3jdufnwrhf62j1k33f
+```
+
+> **Note**: If you don't configure this step, the bot will still work normally, but cannot handle video files larger than 20MB.
+
+### Important Warning
+
+⚠️ **Synchronization Function Warning**: The `/sync` command will **delete all files in the target directory**, including metadata. Large-scale synchronization operations may trigger 115 Network Disk's risk control mechanism, please use with caution!
 
 ### License
 ```
@@ -211,7 +241,19 @@ Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights
 to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software...
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
 
 ## Buy me a coffee~
