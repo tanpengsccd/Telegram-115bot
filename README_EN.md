@@ -193,6 +193,7 @@ Please refer to the comments in `config/config.yaml.example` for configuration d
 - `/start`   - Show help information
 - `/auth`    - 115 authorization setup
 - `/dl`      - Add offline download
+- `/rl`      - Retry list
 - `/av`      - AV number download
 - `/sync`    - Sync directory and create symlinks
 - `/sm`      - Subscribe to movies
