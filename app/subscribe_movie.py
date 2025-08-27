@@ -36,23 +36,29 @@ def get_tmdb_id(movie_name):
             return None
 
         # 查找第一个电影结果
-        movie_card = soup.find('div', class_='card')
-        if not movie_card:
+        movie_cards = soup.find_all('div', class_='card')
+        if not movie_cards:
             return None
 
-        # 获取链接和标题
-        link = movie_card.find('a', class_='result')
-        if not link or 'href' not in link.attrs:
-            return None
+        for movie_card in movie_cards:
+            # 获取链接和标题
+            link = movie_card.find('a', class_='result')
+            if not link or 'href' not in link.attrs:
+                return None
 
-        # 从URL中提取TMDB ID
-        href = link['href']
-        if '/movie/' not in href:
-            return None
+            # 从URL中提取TMDB ID
+            href = link['href']
+            img_tag = link.find('img')
+            title = img_tag['alt']
+            if title.strip() == movie_name.strip():
+                if '/movie/' not in href:
+                    return None
 
-        tmdb_id = href.split('/movie/')[-1].split('-')[0]
-        if not tmdb_id.isdigit():
-            return None
+                tmdb_id = href.split('/movie/')[-1].split('-')[0]
+                if not tmdb_id.isdigit():
+                    return None
+                else:
+                    break
 
         return int(tmdb_id)
 
@@ -301,7 +307,9 @@ def update_subscribe(movie_name, post_url, download_url):
             
 
 
-# if __name__ == '__main__':
-#     init.init_log()
-#     init.load_yaml_config()
-#     schedule_movie()
+if __name__ == '__main__':
+    # init.init_log()
+    # init.load_yaml_config()
+    # schedule_movie()
+    tmdb_id = get_tmdb_id("赎梦")
+    print(tmdb_id)

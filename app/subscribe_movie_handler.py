@@ -96,7 +96,7 @@ async def subscribe_operate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     operate = query.data
     if operate == "add_subscribe":
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="💡电影名称请保持与TMDB一致！")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="💡请输入电影名称，电影名称请保持与TMDB一致！")
         return ADD_SUBSCRIBE
     
     if operate == "view_subscribe":
