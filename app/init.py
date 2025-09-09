@@ -2,11 +2,32 @@
 
 import os
 import yaml
-from logger import Logger
+import sys
+import shutil
 from typing import Optional
 from telethon import TelegramClient
-from sqlitelib import *
-import time
+
+# 模块路径现在通过 Dockerfile 中的 PYTHONPATH 环境变量设置
+# 为了兼容本地开发，添加后备路径设置
+def _ensure_module_paths():
+    """
+    确保模块路径可用，主要用于本地开发环境
+    在 Docker 环境中，PYTHONPATH 已通过环境变量设置
+    """
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    required_paths = [current_dir, os.path.dirname(current_dir)]
+    
+    for path in required_paths:
+        if path not in sys.path:
+            sys.path.insert(0, path)
+
+# 执行路径检查
+_ensure_module_paths()
+
+from app.utils.logger import Logger
+from app.utils.sqlitelib import *
+
+
 
 
 # 全局日志
@@ -27,8 +48,8 @@ tg_user_client: Optional[TelegramClient] = None
 # yaml配置文件目录
 CONFIG_FILE = "/config/config.yaml"
 
-# 115Cookie File
-COOKIE_FILE = "/config/cookie.txt"
+# APP path
+APP = "/app"
 
 # SessionFile
 TG_SESSION_FILE = "/config/user_session.session"
@@ -47,7 +68,7 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTM
 
 # 调试用
 # CONFIG_FILE = "config/config.yaml"
-# COOKIE_FILE = "config/cookie.txt"
+# APP = "app"
 # TG_SESSION_FILE = "config/user_session.session"
 # DB_FILE = "config/db.db"
 # TOKEN_FILE = "config/115_tokens.json"
@@ -61,8 +82,20 @@ def create_logger():
     :return:
     """
     global logger
+    import logging
+    from typing import Dict
+    # 日志级别映射字典
+    LOG_LEVEL_MAP: Dict[str, int] = {
+        'debug': logging.DEBUG,
+        'info': logging.INFO,
+        'warning': logging.WARNING,
+        'error': logging.ERROR,
+        'critical': logging.CRITICAL
+    }
+    log_level = bot_config.get('log_level', 'info').lower()
+    log_level = LOG_LEVEL_MAP.get(log_level, logging.INFO)
     # 全局日志实例，输出到命令行和文件
-    logger = Logger()
+    logger = Logger(level=log_level)
     logger.info("Logger init success!")
 
 
@@ -82,9 +115,23 @@ def load_yaml_config():
                 f.close()
             bot_config = yaml.load(cfg, Loader=yaml.FullLoader)
         else:
-            logger.error("Config file not found!")
+            # 如果找不到配置文件，直接复制config.yaml.example到/config/config.yaml
+            example_config_path = f"{APP}/config.yaml.example"
+            if os.path.exists(example_config_path):
+                # 确保目标目录存在
+                os.makedirs(os.path.dirname(yaml_path), exist_ok=True)
+                # 复制示例配置文件
+                shutil.copy2(example_config_path, yaml_path)
+                print(f"已复制示例配置文件到 {yaml_path}")
+                # 重新读取配置文件
+                with open(yaml_path, 'r', encoding='utf-8') as f:
+                    cfg = f.read()
+                    f.close()
+                bot_config = yaml.load(cfg, Loader=yaml.FullLoader)
+            else:
+                print("Config example file not found!")
     except Exception as e:
-        logger.error(f"配置文件[{yaml_path}]格式有误，请检查!")
+        print(f"配置文件[{yaml_path}]格式有误，请检查!")
 
 
 def get_bot_token():
@@ -145,7 +192,12 @@ def initialize_115open():
     """
     global openapi_115, logger
     try:
-        from open_115 import OpenAPI_115
+        # 尝试使用app包导入，失败则使用直接导入
+        try:
+            from app.core.open_115 import OpenAPI_115
+        except ImportError:
+            from open_115 import OpenAPI_115
+            
         openapi_115 = OpenAPI_115()
         # 检查是否成功获取到token
         if openapi_115.access_token and openapi_115.refresh_token:
@@ -273,30 +325,44 @@ def init_db():
         );
         '''
         sqlite.execute_sql(create_table_query)
+        
+        create_table_query = '''
+        CREATE TABLE IF NOT EXISTS sehua_data (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            section_name TEXT, -- 版块名称
+            av_number TEXT, -- 番号
+            title TEXT, -- 标题
+            movie_type TEXT, -- 有码|无码
+            size TEXT, -- 文件大小
+            magnet TEXT, -- 磁力链接
+            post_url TEXT, -- 封面url
+            publish_date DATETIME, -- 发布时间
+            pub_url TEXT, -- 资源链接
+            image_path TEXT, -- 图片本地路径 
+            is_download TINYINT DEFAULT 0, -- 是否下载, 0或1, 默认0
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP -- 创建时间，默认当前时间
+        );
+        '''
+        sqlite.execute_sql(create_table_query)
         logger.info("init DataBase success.")
         
-def escape_markdown_v2(text: str) -> str:
-
-    # 需要转义的字符
-    escape_chars = r"\_*[]()~`>#+-=|{}.!"
-
-    # 判断是否被反引号包裹
-    if text.startswith("`") and text.endswith("`"):
-        # 反引号包裹的内容不转义
-        return text
-    else:
-        # 转义特殊字符
-        escaped_text = "".join(f"\\{char}" if char in escape_chars else char for char in text)
-        return escaped_text
 
 def init_log():
     create_logger()
 
 
 def init():
+    """
+    初始化应用程序
+    注意：load_model() 已经在模块导入时调用，这里不再重复调用
+    """
     global bot_config, logger
-    create_logger()
     load_yaml_config()
+    create_logger()
     create_tmp()
     init_db()
     initialize_tg_usr_client()
+
+
+if __name__ == "__main__":
+    load_yaml_config()

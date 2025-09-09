@@ -8,6 +8,7 @@
 # from telegram.warnings import PTBUserWarning
 # import subscribe as sub2db
 # from sqlitelib import *
+# from telegram.helpers import escape_markdown
 
 # filterwarnings(action="ignore", message=r".*CallbackQueryHandler", category=PTBUserWarning)
 
@@ -19,7 +20,7 @@
 # async def subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #     usr_id = update.message.from_user.id
 #     if not init.check_user(usr_id):
-#         await update.message.reply_text("⚠️对不起，您无权使用115机器人！")
+#         await update.message.reply_text("⚠️ 对不起，您无权使用115机器人！")
 #         return ConversationHandler.END
 
 #     keyboard = [
@@ -49,7 +50,7 @@
 #         actor_list = get_actors()
 #         subscribe_text = ""
 #         for item in actor_list:
-#             markdown_v2 = escape_markdown_v2(item[1])
+#             markdown_v2 = escape_markdown(item[1], version=2)
 #             subscribe_text += f"{item[0]}\\. {markdown_v2}\n"
 #         subscribe_text = subscribe_text.strip()
 #         init.logger.info(subscribe_text)
@@ -57,12 +58,12 @@
 #             subscribe_text = "订阅列表为空。"
 #         await context.bot.send_message(chat_id=update.effective_chat.id, text=subscribe_text, parse_mode="MarkdownV2")
 #         if actor_list:
-#             await context.bot.send_message(chat_id=update.effective_chat.id, text="💡请输入要删除的ID")
+#             await context.bot.send_message(chat_id=update.effective_chat.id, text="💡 请输入要删除的ID")
 #             return DEL_SUBSCRIBE
         
 #     if operate == "clear_subscribe":
 #         clear_subscribe()
-#         await context.bot.send_message(chat_id=update.effective_chat.id, text="✅订阅列表已清空")
+#         await context.bot.send_message(chat_id=update.effective_chat.id, text="✅ 订阅列表已清空")
 #         return SUBSCRIBE_OPERATE
     
 #     if operate == "quit":
@@ -78,10 +79,10 @@
 #     if add_subscribe_actor(actor_name, usr_id):
 #         # 添加订阅到数据库
 #         sub2db.add_subscribe2db(actor_name, usr_id)
-#         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅[{actor_name}]添加订阅成功！")
+#         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ [{actor_name}]添加订阅成功！")
 #         return SUBSCRIBE_OPERATE
 #     else:
-#         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌[{actor_name}]已存在，请勿重复添加。")
+#         await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ [{actor_name}]已存在，请勿重复添加。")
 #         return SUBSCRIBE_OPERATE
 
 
@@ -89,7 +90,7 @@
 #     actor_list = get_actors()
 #     subscribe_text = ""
 #     for item in actor_list:
-#         markdown_v2 = escape_markdown_v2(item[1])
+#         markdown_v2 = escape_markdown(item[1], version=2)
 #         subscribe_text += f"{item[0]}\\. {markdown_v2}\n"
 #     subscribe_text = subscribe_text.strip()
 #     init.logger.info(subscribe_text)
@@ -108,13 +109,13 @@
 #             # 删除订阅数据库
 #             sub2db.del_sub_by_actor(actor_id, actor_name)
 #             init.logger.info("[{actor_name}]删除订阅成功.")
-#             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅[{actor_name}]删除订阅成功！")
+#             await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ [{actor_name}]删除订阅成功！")
 #             return SUBSCRIBE_OPERATE
 #         else:
-#             await context.bot.send_message(chat_id=update.effective_chat.id, text="❌输入的ID有误，请检查！")
+#             await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ 输入的ID有误，请检查！")
 #             return DEL_SUBSCRIBE
 #     except (ValueError, IndexError):
-#         await context.bot.send_message(chat_id=update.effective_chat.id, text="❌请输入有效的数字ID！")
+#         await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ 请输入有效的数字ID！")
 #         return DEL_SUBSCRIBE
 
 
@@ -193,10 +194,6 @@
 #         sqlite.execute_sql(sql, params)
 #         init.logger.info("All subscribe actors has been deleted.")
 #     sub2db.del_all_subscribe()
-
-
-# def escape_markdown_v2(text):
-#     return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', text)
 
 
 # def register_subscribe_handlers(application):

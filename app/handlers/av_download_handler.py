@@ -5,7 +5,12 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CommandHandler, ConversationHandler, CallbackQueryHandler
 from telegram.error import TelegramError
 import init
-from cover_capture import get_av_cover
+from concurrent.futures import ThreadPoolExecutor
+from app.utils.cover_capture import get_av_cover
+from telegram.helpers import escape_markdown
+
+# 全局线程池，用于处理下载任务
+download_executor = ThreadPoolExecutor(max_workers=5, thread_name_prefix="AV_Download")
 
 
 
@@ -14,14 +19,14 @@ SELECT_MAIN_CATEGORY, SELECT_SUB_CATEGORY = range(60, 62)
 async def start_av_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     usr_id = update.message.from_user.id
     if not init.check_user(usr_id):
-        await update.message.reply_text("⚠️对不起，您无权使用115机器人！")
+        await update.message.reply_text(" 对不起，您无权使用115机器人！")
         return ConversationHandler.END
 
     if context.args:
         av_number = " ".join(context.args)
         context.user_data["av_number"] = av_number  # 将用户参数存储起来
     else:
-        await update.message.reply_text("⚠️请在'/av '命令后输入车牌！")
+        await update.message.reply_text("⚠️ 请在'/av '命令后输入车牌！")
         return ConversationHandler.END
     # 显示主分类（电影/剧集）
     keyboard = [
@@ -71,66 +76,25 @@ async def select_sub_category(update: Update, context: ContextTypes.DEFAULT_TYPE
     
     av_number = context.user_data["av_number"]
     context.user_data["selected_path"] = selected_path
+    user_id = update.effective_user.id
+    
     # 自动创建目录
     init.openapi_115.create_dir_recursive(selected_path)
-    # 抓取磁力
-    av_result = get_av_result(av_number)
-    for item in av_result:
-        title = item['title']
-        magnet = item['magnet']
-        
-        # 离线下载到115
-        offline_success = init.openapi_115.offline_download_specify_path(magnet, selected_path)
-        
-        if offline_success:
-            await query.edit_message_text(f"✅{title} 已添加到离线下载队列！")
-        else:
-            await query.edit_message_text(f"❌{title} 添加离线下载失败！")
-        download_success, resource_name = init.openapi_115.check_offline_download_success(magnet)
-        if download_success:
-            init.logger.info(f"✅{title} 离线下载成功！")
-            # 按照AV番号重命名
-            if resource_name != av_number.upper():
-                old_name = f"{selected_path}/{resource_name}"
-                init.openapi_115.rename(old_name, av_number.upper())
-            # 删除垃圾
-            init.openapi_115.auto_clean(f"{selected_path}/{av_number.upper()}")
-            # 提取封面
-            cover_url, title = get_av_cover(av_number.upper())
-            if cover_url:
-                try:
-                    init.logger.info(f"cover_url: {cover_url}")
-                    if title:
-                        await context.bot.send_photo(chat_id=update.effective_chat.id, photo=cover_url, caption=title)
-                    else:
-                        await context.bot.send_photo(chat_id=update.effective_chat.id, photo=cover_url, caption=resource_name)
-                except TelegramError as e:
-                    init.logger.warn(f"Telegram API error: {e}")
-                except Exception as e:
-                    init.logger.warn(f"Unexpected error: {e}")
-            # 发送通知
-            message = f"""
-                {item['title']}下载完成！\n保存目录：{selected_path}/{av_number.upper()}
-            """
-            message = init.escape_markdown_v2(message)
-            await context.bot.send_message(chat_id=update.effective_chat.id,
-                                text=message,
-                                parse_mode='MarkdownV2')
-            return ConversationHandler.END
-        else:
-            init.logger.info(f"❌{title} 离线下载失败, 继续尝试下一个磁力！")
-            # 删除失败的离线任务
-            init.openapi_115.clear_failed_task(magnet)
     
-    if av_result:
-        # 全部下载失败
-        await context.bot.send_message(chat_id=update.effective_chat.id,
-                                    text="**😭全部下载失败，请稍后重试！**",
-                                    parse_mode='MarkdownV2')
-    else:
-        await context.bot.send_message(chat_id=update.effective_chat.id,
-                                    text="**😵‍💫很遗憾，没有找到对应磁力~**",
-                                    parse_mode='MarkdownV2')
+    # 抓取磁力
+    await query.edit_message_text(f"🔍 正在搜索 [{av_number}] 的磁力链接...")
+    av_result = get_av_result(av_number)
+    
+    if not av_result:
+        await query.edit_message_text(f"😵‍💫很遗憾，没有找到{[av_number.upper()]}的对应磁力~")
+        return ConversationHandler.END
+    
+    # 立即反馈用户
+    await query.edit_message_text(f"✅ [{av_number}] 已为您添加到下载队列！\n请稍后~")
+    
+    # 使用全局线程池异步执行下载任务
+    download_executor.submit(download_task, av_result, av_number, selected_path, user_id)
+    
     return ConversationHandler.END
 
 
@@ -164,6 +128,68 @@ def get_av_result(av_number):
             'magnet': magnet
         })
     return result
+
+def download_task(av_result, av_number, save_path, user_id):
+    """异步下载任务"""
+    try:
+        for item in av_result:
+            magnet = item['magnet']
+            title = item['title']
+            # 离线下载到115
+            offline_success = init.openapi_115.offline_download_specify_path(magnet, save_path)
+
+            if not offline_success:
+                continue
+            
+            # 检查下载状态
+            download_success, resource_name = init.openapi_115.check_offline_download_success(magnet)
+            
+            if download_success:
+                init.logger.info(f"✅ {av_number} 离线下载成功！")
+                
+                # 按照AV番号重命名
+                if resource_name != av_number.upper():
+                    old_name = f"{save_path}/{resource_name}"
+                    init.openapi_115.rename(old_name, av_number.upper())
+                
+                # 删除垃圾
+                init.openapi_115.auto_clean(f"{save_path}/{av_number.upper()}")
+                
+                # 提取封面
+                cover_url, title = get_av_cover(av_number.upper())
+                cover_image = None
+                if cover_url:
+                    cover_image = cover_url
+                msg_av_number = escape_markdown(f"#{av_number.upper()}", version=2)
+                av_title = escape_markdown(title, version=2)
+                msg_title = escape_markdown(f"[{av_number.upper()}] 下载完成", version=2)
+                # 发送成功通知
+                message = f"""
+**{msg_title}**
+
+**番号:** `{msg_av_number}`
+**标题:** `{av_title}`
+**保存目录:** `{save_path}/{av_number.upper()}`
+                """           
+                from app.utils.message_queue import add_task_to_queue
+                add_task_to_queue(user_id, cover_image, message)
+                return  # 成功后直接返回
+            else:
+                # 删除失败的离线任务
+                init.openapi_115.clear_failed_task(magnet)
+        
+        # 如果循环结束都没有成功，发送失败通知
+        init.logger.info(f"❌ {av_number} 所有磁力链接都下载失败")
+        from app.utils.message_queue import add_task_to_queue
+        add_task_to_queue(user_id, None, f"❌ [{av_number}] 所有磁力链接都下载失败，请稍后重试！")
+        
+    except Exception as e:
+        init.logger.error(f"下载任务执行出错: {str(e)}")
+        from app.utils.message_queue import add_task_to_queue
+        add_task_to_queue(user_id, None, f"❌ [{av_number}] 下载任务执行出错: {str(e)}")
+    finally:
+        # 清空离线任务
+        init.openapi_115.clear_cloud_task()
 
 
 def register_av_download_handlers(application):

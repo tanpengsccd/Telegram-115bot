@@ -10,6 +10,7 @@
 # from message_queue import add_task_to_queue
 # import yaml
 # from download_handler import create_strm_file, notice_emby_scan_library
+# from telegram.helpers import escape_markdown
 
 
 # def get_actor_id(actor_name):
@@ -312,9 +313,9 @@
 #         score = res[0][4]
 #         title = res[0][5]
 #         pub_url = res[0][6]
-#         msg_title = escape_markdown_v2(f"[{number}] {title} 订阅已下载!")
-#         msg_actor_name = escape_markdown_v2(actor_name)
-#         msg_score = escape_markdown_v2(str(score))
+#         msg_title = escape_markdown(f"[{number}] {title} 订阅已下载!", version=2)
+#         msg_actor_name = escape_markdown(actor_name, version=2)
+#         msg_score = escape_markdown(str(score), version=2)
 #         message = f"""
 #                 **{msg_title}**
 
@@ -333,19 +334,17 @@
 
 # def download2spec_path(magnet_link, number, actor_name):
 #     try: 
-#         # 清除云端任务，避免重复下载
-#         init.openapi_115.clear_cloud_task()
 #         save_path = f"{init.bot_config['subscribe']['path']}/{actor_name}"
 #         # 创建目录
 #         init.openapi_115.create_dir_for_file(f"{init.bot_config['subscribe']['path']}", actor_name)
 #         offline_success = init.openapi_115.offline_download(magnet_link)
 #         if not offline_success:
-#             init.logger.error(f"❌离线遇到错误！")
+#             init.logger.error(f"❌ 离线遇到错误！")
 #         else:
-#             init.logger.info(f"✅[`{magnet_link}`]添加离线成功")
+#             init.logger.info(f"✅ [`{magnet_link}`]添加离线成功")
 #             download_success, resource_name = init.openapi_115.check_offline_download_success(magnet_link)
 #             if download_success:
-#                 init.logger.info(f"✅[{resource_name}]离线下载完成")
+#                 init.logger.info(f"✅ [{resource_name}]离线下载完成")
 #                 if init.openapi_115.is_directory(f"{init.bot_config['offline_path']}/{resource_name}"):
 #                     # 清除垃圾文件
 #                     init.openapi_115.auto_clean(f"{init.bot_config['offline_path']}/{resource_name}")
@@ -375,6 +374,9 @@
 #     except Exception as e:
 #         init.logger.error(f"💀下载遇到错误: {str(e)}")
 #         return False
+#     finally:
+#         # 清除云端任务，避免重复下载
+#         init.openapi_115.clear_cloud_task()
 
 
 # def get_actors():
@@ -383,27 +385,6 @@
 #         params = ("0",)
 #         result = sqlite.query(sql, params)
 #         return [{"actor_name": row[0], "sub_user": row[1]} for row in result]
-    
-
-# def escape_markdown_v2(text: str) -> str:
-#     """
-#     转义字符串以符合 Telegram MarkdownV2 的要求。
-#     如果字符串被反引号包裹，则内部内容不转义。
-#     :param text: 原始字符串
-#     :return: 转义后的字符串
-#     """
-#     # 需要转义的字符
-#     escape_chars = r"\_*[]()~`>#+-=|{}.!"
-
-#     # 判断是否被反引号包裹
-#     if text.startswith("`") and text.endswith("`"):
-#         # 反引号包裹的内容不转义
-#         return text
-#     else:
-#         # 转义特殊字符
-#         escaped_text = "".join(f"\\{char}" if char in escape_chars else char for char in text)
-#         return escaped_text
-    
 
 
 # if __name__ == '__main__':
@@ -418,8 +399,8 @@
 #     # actor_name = "涼森玲夢"
 #     # score = "0.0"
 #     # pub_url = "https://javdb.com/v/mOQN1r"
-#     # msg_title = escape_markdown_v2(f"[{number}] {title} 订阅已下载!")
-#     # msg_actor_name = escape_markdown_v2(actor_name)
+#     # msg_title = escape_markdown(f"[{number}] {title} 订阅已下载!", version=2)
+#     # msg_actor_name = escape_markdown(actor_name, version=2)
 #     # magnet = "magnet:?xt=urn:btih:57c7be25daec95af868a1be865442226c3385211&dn=[javdb.com]abf-208"
 #     # message = f"""
 #     #         **{msg_title}**

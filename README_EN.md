@@ -12,6 +12,14 @@ Usage Issues & Bug Reports
 [Join](https://t.me/+FTPNla_7SCc3ZWVl)
 
 ## Update Log
+v3.2.0
+- Added SeHua spider, crawl sehua data you specify and offline download them to 115 every midnight.
+- Updated interaction experience. Command "/dl", "/av" update to async model, offline download to 115 will not block. Both of the max download queue is 5.
+- Updated interaction flow. If you want to add a record to retry list, you must to specify the TMDB name. Once the retry succeeds, the bot will never ask for it again.
+- Added “/reload” command to reload configuration
+- Added a log file. By default, it will be saved in "/config/115bot.log" and overwritten when the container restarts.
+- Code optimization and bug fixes
+
 v3.1.0
 - Removed AV subscription feature, added AV daily update functionality that automatically updates and downloads the latest resources to 115 daily, can be enabled or disabled in the configuration file. If the offline download fails, the bot will retry every 6 hours until successful.
 - Added direct AV number offline download feature, input 'av ipz-266' to automatically download to 115, eliminating the need to search for magnet links
@@ -125,7 +133,7 @@ If you'd like to help improve this project, welcome to [join](https://t.me/qiqia
      ```
    - Edit `config.yaml`, fill in necessary configurations:
      - Telegram Bot Token
-     - Authorized user list
+     - Telegram authorized user
      - 115 Network Disk configuration
      - Directory mapping settings
 
@@ -144,7 +152,8 @@ If you'd like to help improve this project, welcome to [join](https://t.me/qiqia
      --name tg-bot-115 \
      --restart unless-stopped \
      -e TZ=Asia/Shanghai \
-     -v $PWD/config:/config \
+     -v /path/to/config:/config \
+     -v /path/to/tmp:/tmp \
      -v /path/to/media:/media \
      -v /path/to/CloudNAS:/CloudNAS:rslave \
      115bot:latest
@@ -162,8 +171,9 @@ If you'd like to help improve this project, welcome to [join](https://t.me/qiqia
       # privileged: True
       restart: unless-stopped
       volumes:
-        - $PWD/config:/config
-        - /path/to/media:/media # Emby media library directory (symlink directory)
+        - /path/to/config:/config  # Configuration path
+        - /path/to/tmp:/tmp        # Temp path
+        - /path/to/media:/media    # Emby media library directory (symlink directory)
         - /path/to/CloudNAS:/CloudNAS:rslave # CloudDrive2 mount directory
    ```
 
@@ -173,17 +183,26 @@ Please refer to the comments in `config/config.yaml.example` for configuration d
 
 ### Directory Structure
 ```
-115bot/
-├── app/              # Application source code
-├── config/           # Configuration files
-│   ├── config.yaml   # Main configuration
-│   ├── cookie.txt    # 115 Network Disk Cookie
-│   └── db.db         # SQLite database
-├── tmp/              # Temporary files
-├── images/           # Image resources
-├── Dockerfile        # Application Dockerfile
-├── Dockerfile.base   # Base image Dockerfile
-└── requirements.txt  # Python dependencies
+.
+├── app
+│   ├── 115bot.py                 # Entry point script
+│   ├── config.yaml.example       # Template of configuration
+│   ├── core                      # Core functions
+│   ├── handlers                  # Telegram handlers
+│   ├── images                    # Images
+│   ├── init.py                   # Init script
+│   └── utils                     # Utils
+├── build.sh                      # local build shell
+├── config                        # dir of configuration
+├── create_tg_session_file.py     # create tg_session file
+├── docker-compose.yaml           # docker-compose
+├── Dockerfile                    
+├── Dockerfile.base
+├── legacy                        
+├── LICENSE
+├── README_EN.md
+├── README.md
+├── requirements.txt              
 ```
 
 ## Usage Guide
@@ -192,6 +211,7 @@ Please refer to the comments in `config/config.yaml.example` for configuration d
 
 - `/start`   - Show help information
 - `/auth`    - 115 authorization setup
+- `/reload`  - reload the configuration
 - `/dl`      - Add offline download
 - `/rl`      - Retry list
 - `/av`      - AV number download
@@ -201,7 +221,7 @@ Please refer to the comments in `config/config.yaml.example` for configuration d
 
 ### 115 Open Platform Application
 
-**Strongly recommend applying for 115 Open Platform** for better user experience:
+**Strongly recommend applying for 115 Open Platform for better user experience**
 - Application URL: [115 Open Platform](https://open.115.com/)
 - After approval, fill in the `115_app_id` in the configuration file
 
@@ -236,7 +256,7 @@ tg_api_hash: 1yh3j4k9dsk0fj3jdufnwrhf62j1k33f
 ```
 MIT License
 
-Copyright (c) 2024 Fei
+Copyright (c) 2025 qiqiandfei
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -256,6 +276,10 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+## Disclaimer
+This project is intended solely for educational and research purposes. Please comply with all applicable laws and regulations, and refrain from using it for commercial purposes. Users assume all risks associated with its use!
+
+If this project has been helpful to you, please give it a ⭐!
 
 ## Buy me a coffee~
 ![Buy me a coffee](https://alist.qiqiandfei.fun:8843/d/Syncthing/yufei/%E4%B8%AA%E4%BA%BA/%E8%B5%9E%E8%B5%8F.png)

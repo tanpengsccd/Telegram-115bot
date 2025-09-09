@@ -23,7 +23,7 @@ def add_task_to_queue(sub_user, post_url, message, keyboard=None):
             global_loop 
         )
         future.result(timeout=30)  # 等待任务添加到队列，设置超时时间
-        init.logger.info(f"任务已添加到队列: {sub_user}, {post_url}, {message}")
+        init.logger.debug(f"任务已添加到队列: {sub_user}, {post_url}, {message}")
         return True
     except TimeoutError:
         init.logger.error(f"添加任务到队列超时: {sub_user}, {post_url}, {message}")
@@ -52,7 +52,16 @@ async def queue_worker(loop, token):
             else:
                 sub_user, post_url, message, keyboard = task_data
                 
-            init.logger.info(f"取出任务: 用户[{sub_user}], 链接[{post_url}], 消息[{message}]")
+            init.logger.info(f"从消息队列中取出任务: 用户[{sub_user}], 链接[{post_url}], 消息[{message}]")
+            
+            # 检查键盘数据
+            if keyboard:
+                init.logger.info(f"键盘数据: {keyboard}")
+                # 检查callback_data长度
+                for row in keyboard.inline_keyboard:
+                    for button in row:
+                        if button.callback_data and len(button.callback_data) > 64:
+                            init.logger.error(f"按钮数据过长: {len(button.callback_data)} bytes - {button.callback_data[:100]}...")
             
             # 根据是否有图片和键盘选择发送方式
             if post_url:

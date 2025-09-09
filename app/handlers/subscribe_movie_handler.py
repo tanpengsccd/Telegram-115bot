@@ -6,8 +6,9 @@ from telegram.ext import CommandHandler, CallbackQueryHandler, MessageHandler, f
 import init
 from warnings import filterwarnings
 from telegram.warnings import PTBUserWarning
-import subscribe_movie as sm
-from sqlitelib import *
+from app.core.subscribe_movie import get_tmdb_id
+from app.utils.sqlitelib import *
+from telegram.helpers import escape_markdown
 
 
 filterwarnings(action="ignore", message=r".*CallbackQueryHandler", category=PTBUserWarning)
@@ -20,11 +21,11 @@ SUBSCRIBE, SUBSCRIBE_OPERATE, ADD_SUBSCRIBE, VIEW_SUBSCRIBE, DEL_SUBSCRIBE, SELE
 async def subscribe_moive(update: Update, context: ContextTypes.DEFAULT_TYPE):
     usr_id = update.message.from_user.id
     if not init.check_user(usr_id):
-        await update.message.reply_text("⚠️对不起，您无权使用115机器人！")
+        await update.message.reply_text("⚠️ 对不起，您无权使用115机器人！")
         return ConversationHandler.END
     if init.bot_config.get("x_app_id", "") == "your_app_id" or init.bot_config.get("x_app_id", "") == "" \
         or init.bot_config.get("x_api_key", "") == "your_api_key" or init.bot_config.get("x_api_key", "") == "":
-        await update.message.reply_text("⚠️请先取得nullbrAPI接口的授权才能使用电影订阅功能！\n申请方法见配置文件。")
+        await update.message.reply_text("⚠️ 请先取得nullbrAPI接口的授权才能使用电影订阅功能！\n申请方法见配置文件。")
         return ConversationHandler.END
 
     keyboard = [
@@ -73,7 +74,7 @@ async def select_sub_category(update: Update, context: ContextTypes.DEFAULT_TYPE
     if selected_path == "cancel":
         return await quit_conversation(update, context)
     context.user_data["selected_path"] = selected_path
-    await query.edit_message_text(text=f"✅已选择保存目录：{selected_path}")
+    await query.edit_message_text(text=f"✅ 已选择保存目录：{selected_path}")
     
     # 获取之前保存的电影名称和用户ID
     movie_name = context.user_data["movie_name"]
@@ -106,7 +107,7 @@ async def subscribe_operate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         movie_list = get_subscribe_movie()
         subscribe_text = "点击TMDB\\_ID自动复制 \n"
         for item in movie_list:
-            markdown_v2 = escape_markdown_v2(item[1])
+            markdown_v2 = escape_markdown(item[1], version=2)
             subscribe_text += f"`{item[0]}`\\. {markdown_v2}\n"
         subscribe_text = subscribe_text.strip()
         if not movie_list:
@@ -118,7 +119,7 @@ async def subscribe_operate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
     if operate == "clear_subscribe":
         clear_subscribe()
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="✅订阅列表已清空")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="✅ 订阅列表已清空！")
         return SUBSCRIBE_OPERATE
     
     if operate == "quit":
@@ -131,11 +132,11 @@ async def add_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     usr_id = update.message.from_user.id
     movie_name = update.message.text
     # 先检查电影是否存在于TMDB
-    tmdb_id = sm.get_tmdb_id(movie_name)
+    tmdb_id = get_tmdb_id(movie_name)
     if tmdb_id is None:
         await context.bot.send_message(
             chat_id=update.effective_chat.id, 
-            text=f"❌ 无法找到电影[{movie_name}]的TMDB信息, 请确认电影名称是否正确!"
+            text=f"❌ 无法找到电影[{movie_name}]的TMDB信息, 请确认电影名称是否正确！"
         )
         return SUBSCRIBE_OPERATE
     
@@ -165,7 +166,7 @@ async def view_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     movie_list = get_subscribe_movie()
     subscribe_text = "点击TMDB\\_ID自动复制 \n"
     for item in movie_list:
-        markdown_v2 = escape_markdown_v2(item[1])
+        markdown_v2 = escape_markdown(item[1], version=2)
         subscribe_text += f"`{item[0]}`\\. {markdown_v2}\n"
     subscribe_text = subscribe_text.strip()
     init.logger.info(subscribe_text)
@@ -182,13 +183,13 @@ async def del_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if success:
             del_subscribe_movie(tmdb_id)
             init.logger.info("[{actor_name}]删除订阅成功.")
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅[{movie_name}]删除订阅成功！")
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=f"✅ [{movie_name}]删除订阅成功！")
             return SUBSCRIBE_OPERATE
         else:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="❌输入的TMDB ID有误，请检查！")
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ 输入的TMDB ID有误，请检查！")
             return DEL_SUBSCRIBE
     except (ValueError, IndexError):
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌输入的TMDB ID有误，请检查！")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ 输入的TMDB ID有误，请检查！")
         return DEL_SUBSCRIBE
 
 
@@ -299,10 +300,6 @@ def get_subscribe_movie():
             item = [row[0], row[1]]
             movie_list.append(item.copy())
         return movie_list
-
-
-def escape_markdown_v2(text):
-    return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', text)
 
 
 def register_subscribe_movie_handlers(application):

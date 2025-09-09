@@ -1,12 +1,14 @@
 import requests
-from sqlitelib import *
+from app.utils.sqlitelib import *
 import datetime
 from bs4 import BeautifulSoup
 import init
 import time
 import re
-from message_queue import add_task_to_queue
+from app.utils.message_queue import add_task_to_queue
 import urllib3
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from offline_task_retry import av_daily_offline
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 
@@ -41,9 +43,16 @@ def get_today_av():
         init.logger.warn(f"服务器响应错误，可能是[{date}]尚未更新。")
         return None
     if response.status_code != 200:
-        init.logger.warn(f"获取日更信息错误，HTTP Code: {response.status_code}")
+        init.logger.warn(f"获取[{date}]日更信息错误，HTTP Code: {response.status_code}")
         return None
-    max_page = get_max_page(response.text)
+    
+    # 抓取磁力
+    return crawl_javbee(url, response.text, date)
+       
+    
+    
+def crawl_javbee(url, html_content, publish_date):
+    max_page = get_max_page(html_content)
     if not max_page:
         return None
     else:
@@ -81,12 +90,37 @@ def get_today_av():
                     'av_title': av_title,
                     'cover_url': cover_url,
                     'magnet_url': magnet_url,
-                    'publish_date': date,
+                    'publish_date': publish_date,
                     'pub_url': pub_url
                 })
             time.sleep(3)  # 避免请求过快
-        return results   
+        return results
     
+    
+def get_yesterday_av():
+    yesterday = datetime.datetime.now() - datetime.timedelta(days=1)
+    date = yesterday.strftime("%Y-%m-%d")
+    url = f"https://javbee.vip/date/{date}"
+    response = requests.get(url, verify=False)
+    if response.status_code == 500:
+        init.logger.warn(f"服务器响应错误，可能是[{date}]尚未更新。")
+        return None
+    if response.status_code != 200:
+        init.logger.warn(f"获取[{date}]日更信息错误，HTTP Code: {response.status_code}")
+        return None
+    # 抓取磁力
+    return crawl_javbee(url, response.text, date)
+
+
+def check_yesterday_exists():
+    yesterday = datetime.datetime.now() - datetime.timedelta(days=1)
+    date = yesterday.strftime("%Y-%m-%d")
+    with SqlLiteLib() as sqlite:
+        sql = "SELECT COUNT(*) FROM av_daily_update WHERE publish_date=?"
+        count = sqlite.query_one(sql, (date,))
+        return count is not None and count > 0
+
+
 def save_av_daily_update2db(results):
     with SqlLiteLib() as sqlite:
         for item in results:
@@ -96,6 +130,10 @@ def save_av_daily_update2db(results):
             post_url = item['cover_url']
             magnet = item['magnet_url']
             pub_url = item['pub_url']
+
+            if not av_number or not publish_date or not title or not magnet or not pub_url:
+                init.logger.warn(f"跳过无效的AV记录，番号: {av_number}, 标题: {title}, 发布链接: {pub_url}")
+                continue
             
             # 检查是否已存在相同的记录
             sql_check = "SELECT COUNT(*) FROM av_daily_update WHERE av_number=? AND publish_date=?"
@@ -120,25 +158,33 @@ def av_daily_update():
     if not init.bot_config.get('av_daily_update', {}).get('enable', False):
         init.logger.info("AV日更功能未启用，跳过更新。")
         return
+    
+    # 如果昨天漏更了，再次尝试获取昨天的更新
+    yesterday_results = []
+    if not check_yesterday_exists():
+        init.logger.info("昨天的AV更新记录不存在，尝试获取昨天的AV更新...")
+        yesterday_results = get_yesterday_av()
+
     # 获取今天的AV更新
+    today_results = []
     init.logger.info("开始获取今天的AV更新...")
-    results = get_today_av()
+    today_results = get_today_av()
+    
+    results = []
+    # 合并昨天和今天的结果
+    if yesterday_results:
+        results.extend(yesterday_results)
+    if today_results:
+        results.extend(today_results)
+
     if results:
         # 保存到数据库
         save_av_daily_update2db(results)
         init.logger.info("AV日更数据保存成功。")
         # 离线到115
-        offline2115()
+        av_daily_offline()
     else:
         init.logger.info("没有找到最新的AV更新。")  
-        
-def av_daily_retry():
-    # 检查配置是否启用AV日更
-    if not init.bot_config.get('av_daily_update', {}).get('enable', False):
-        init.logger.info("AV日更功能未启用，跳过更新。")
-        return
-    # 离线到115
-    offline2115()
     
     
 def repair_leak():
@@ -154,103 +200,6 @@ def repair_leak():
     if need_update:
         av_daily_update()
         
-
-def offline2115():
-    # 确保日更目录存在
-    init.openapi_115.create_dir_recursive(init.bot_config['av_daily_update']['save_path'])
-    update_list = []
-    # 找到需要下载的AV
-    with SqlLiteLib() as sqlite:
-        sql = "SELECT av_number, magnet, publish_date, title, post_url, pub_url FROM av_daily_update WHERE is_download=0 ORDER BY publish_date DESC"
-        need_offline_av = sqlite.query(sql)
-        if not need_offline_av:
-            init.logger.info("没有需要离线下载的日更")
-            return
-        for row in need_offline_av:
-            av_number = row[0]
-            magnet = row[1]
-            publish_date = row[2]
-            title = row[3]
-            post_url = row[4]
-            pub_url = row[5]
-            update_list.append({
-                "av_number": av_number,
-                "magnet": magnet,
-                "publish_date": publish_date,
-                "title": title,
-                "post_url": post_url,
-                "pub_url": pub_url,
-                "success": False  # 初始状态为未成功
-            })
-    
-    # 清除离线任务避免重复下载
-    init.openapi_115.clear_cloud_task()
-    
-    # 添加到离线下载
-    offline_tasks = ""
-    for item in update_list:
-        offline_tasks += item['magnet'] + "\n"
-    offline_tasks = offline_tasks[:-1]  # 去掉最后的换行符
-    
-    # 调用115的离线下载API
-    offline_success = init.openapi_115.offline_download_specify_path(
-        offline_tasks,
-        init.bot_config['av_daily_update']['save_path'])
-    if not offline_success: 
-        init.logger.error(f"{item['av_number']}添加离线失败!")
-    else:
-        init.logger.info(f"{item['av_number']}添加离线成功!")
-            
-    # 等待离线完成
-    time.sleep(300)  # 等待一段时间，确保离线成功
-    
-    # 检查离线下载状态     
-    for item in update_list:
-        download_success, resource_name = init.openapi_115.check_offline_download_success_no_waite(item['magnet'])
-        if download_success:
-            # 如果资源名与番号不一致，重命名
-            if item['av_number'] != resource_name:
-                old_name = f"{init.bot_config['av_daily_update']['save_path']}/{resource_name}"
-                init.openapi_115.rename(old_name, item['av_number'])
-            # 删除垃圾文件
-            init.openapi_115.auto_clean(f"{init.bot_config['av_daily_update']['save_path']}/{item['av_number']}")
-            # 更新数据库状态
-            with SqlLiteLib() as sqlite:
-                sql_update = "UPDATE av_daily_update SET is_download=1 WHERE av_number=?"
-                params_update = (item['av_number'],)
-                sqlite.execute_sql(sql_update, params_update)
-            init.logger.info(f"{item['av_number']} 离线下载成功！")
-            item['success'] = True
-            # 发送通知
-            if init.bot_config.get('av_daily_update', {}).get('notify_me', False):
-                msg_title = init.escape_markdown_v2(item['title'])
-                msg_date = init.escape_markdown_v2(item['publish_date'])
-                pub_url = item['pub_url']
-                message = f"""
-**AV日更通知**
-
-**番号:**   `{item['av_number']}`
-**标题:**   {msg_title}
-**发布日期:** {msg_date}
-**下载链接:** `{item['magnet']}`
-**发布链接:** [点击查看详情]({pub_url})
-                """
-                add_task_to_queue(init.bot_config['allowed_user'], item['post_url'], message)
-            time.sleep(10)  # 避免发送过快
-        else:
-            init.logger.warn(f"{item['av_number']} 离线下载失败或未完成。")
-            # 删除离线失败的文件
-            init.openapi_115.clear_failed_task(item['magnet'])
-
-    total_count = len(update_list)
-    success_count = sum(1 for item in update_list if item['success'])
-    message = f"本次AV日更结束！总计离线：{total_count}， 成功：{success_count}， 失败：{total_count - success_count}"
-    init.logger.info(message) 
-    if total_count != success_count:
-        init.logger.info("失败的任务会在下次自动重试，请检查日志。")
-        message += "\n失败的任务会在下次自动重试，请留意日志或通知！"
-    
-    add_task_to_queue(init.bot_config['allowed_user'], f"{init.IMAGE_PATH}/male022.png", message)   
         
 def get_minimal_magnet(magnet_link):
     return re.sub(r"(&dn=.*|&tr=.*)", "", magnet_link)
@@ -287,22 +236,26 @@ def get_avnumber_title(parts):
 
 
 if __name__ == "__main__":
-    tmp = " FC2-PPV-4747086 モ無/フェラ/□り/ 18歳ユウカちゃん・ふとした瞬間に大胆になる普段は大人しい□りの欲求不満爆発サイン ".strip()
-    parts = tmp.split(' ')
-    av_number, av_title = get_avnumber_title(parts)
-    print(f"番号: {av_number}, 标题: {av_title}")
-    tmp = " [FHD] ABF-260 神テクたったの10分間我慢することが出来れば…ご褒美なま中出し 八掛うみ【限定特典映像35分付き】".strip()
-    parts = tmp.split(' ')
-    av_number, av_title = get_avnumber_title(parts)
-    print(f"番号: {av_number}, 标题: {av_title}")
-    tmp = " FC2-PPV-4739066 【素人・玲】 ".strip()
-    parts = tmp.split(' ')
-    av_number, av_title = get_avnumber_title(parts)
-    print(f"番号: {av_number}, 标题: {av_title}")
-    tmp = " FC2-PPV-4735332 撮影に協*してくれた小柄な新卒OLをおもちゃ責めしちゃいました IMEDAMAFC2 ".strip()
-    parts = tmp.split(' ')
-    av_number, av_title = get_avnumber_title(parts)
-    print(f"番号: {av_number}, 标题: {av_title}")
-
-               
-    
+    # tmp = " FC2-PPV-4747086 モ無/フェラ/□り/ 18歳ユウカちゃん・ふとした瞬間に大胆になる普段は大人しい□りの欲求不満爆発サイン ".strip()
+    # parts = tmp.split(' ')
+    # av_number, av_title = get_avnumber_title(parts)
+    # print(f"番号: {av_number}, 标题: {av_title}")
+    # tmp = " [FHD] ABF-260 神テクたったの10分間我慢することが出来れば…ご褒美なま中出し 八掛うみ【限定特典映像35分付き】".strip()
+    # parts = tmp.split(' ')
+    # av_number, av_title = get_avnumber_title(parts)
+    # print(f"番号: {av_number}, 标题: {av_title}")
+    # tmp = " FC2-PPV-4739066 【素人・玲】 ".strip()
+    # parts = tmp.split(' ')
+    # av_number, av_title = get_avnumber_title(parts)
+    # print(f"番号: {av_number}, 标题: {av_title}")
+    # tmp = " FC2-PPV-4735332 撮影に協*してくれた小柄な新卒OLをおもちゃ責めしちゃいました IMEDAMAFC2 ".strip()
+    # parts = tmp.split(' ')
+    # av_number, av_title = get_avnumber_title(parts)
+    # print(f"番号: {av_number}, 标题: {av_title}")
+    # date = datetime.datetime.now() - datetime.timedelta(days=1)
+    # print(f"昨天日期: {date.strftime('%Y-%m-%d')}")
+    url = f"https://javbee.vip/date/2025-08-26"
+    response = requests.get(url, verify=False)
+    result = crawl_javbee(url, response.text, '2025-08-26')
+    for item in result:
+        print(item['av_number'], item['av_title'], item['magnet_url'])

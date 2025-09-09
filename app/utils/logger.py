@@ -9,7 +9,6 @@ class Logger:
         日志类构造函数
         :param level: 日志级别
         """
-        # self.logger = logging.getLogger(path)
         self.logger = logging.getLogger()
         self.logger.setLevel(level)
         fmt = logging.Formatter('[%(asctime)s] [%(levelname)s] %(message)s', '%Y-%m-%d %H:%M:%S')
@@ -19,6 +18,12 @@ class Logger:
         ch.setFormatter(fmt)
         ch.setLevel(level)
         self.logger.addHandler(ch)
+        
+        # 日志文件输出
+        fs = logging.FileHandler("/config/115bot.log", encoding="utf-8", mode='w')
+        fs.setLevel(level)
+        fs.setFormatter(fmt)
+        self.logger.addHandler(fs)
 
     def debug(self, message):
         """

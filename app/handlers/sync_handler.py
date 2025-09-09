@@ -17,7 +17,7 @@ SELECT_MAIN_CATEGORY_SYNC, SELECT_SUB_CATEGORY_SYNC = range(30, 32)
 async def sync_strm_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
     usr_id = update.message.from_user.id
     if not init.check_user(usr_id):
-        await update.message.reply_text("⚠️对不起，您无权使用115机器人！")
+        await update.message.reply_text("⚠️ 对不起，您无权使用115机器人！")
         return ConversationHandler.END
 
     # 显示主分类（电影/剧集）
@@ -63,7 +63,6 @@ async def select_main_category_sync(update: Update, context: ContextTypes.DEFAUL
         keyboard = [
             [InlineKeyboardButton(category["name"], callback_data=category["path"])] for category in sub_categories
         ]
-        keyboard.append([InlineKeyboardButton("返回", callback_data="return")])
         keyboard.append([InlineKeyboardButton("退出", callback_data="quit")])
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text("❓请选择要同步的目录：", reply_markup=reply_markup)
@@ -75,8 +74,6 @@ async def select_sub_category_sync(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
     # 获取用户选择的路径 "/影视/电影/外语电影/"
     selected_path = query.data
-    if selected_path == "return":
-        return await select_main_category_sync(update, context)
     if selected_path == "quit":
         return await quit_conversation(update, context)
     mount_root = Path(init.bot_config['mount_root'])
@@ -88,26 +85,33 @@ async def select_sub_category_sync(update: Update, context: ContextTypes.DEFAULT
         if sync_path.exists() and sync_path.is_dir():
             shutil.rmtree(str(sync_path))
 
-        await context.bot.send_message(chat_id=update.effective_chat.id,
-                                       text=f"🔄[{selected_path}]正在同步strm文件，请稍后...")
+        await query.edit_message_text(text=f"🔄[{selected_path}]正在同步strm文件，请稍后...")
         # 获取视频文件列表
-        video_files = init.openapi_115.get_files_from_dir(selected_path, file_type=4)
+        video_files = init.openapi_115.get_sync_dir(selected_path, file_type=4)
         for file in video_files:
-            file_path = Path(file)
-            video_path = mount_root / file_path.relative_to("/")
-            strm_path = strm_root / file_path.parent.relative_to("/")
-            if not strm_path.exists():
-                strm_path.mkdir(parents=True, exist_ok=True)
-            strm_content = str(video_path)
-            strm_file = strm_path / (Path(file).stem + ".strm")
-            with open(strm_file, 'w') as f:
-                f.write(strm_content)
-        await context.bot.send_message(chat_id=update.effective_chat.id,
-                                       text=f"✅[{selected_path}]strm文件同步完成！")
+            try:
+                # file = "FC2-PPV-4750727/hhd800.com@FC2-PPV-4750727.mp4"
+                # file 现在包含子目录路径，需要构建完整路径
+                full_file_path = f"{selected_path}/{file}"
+                file_path = Path(full_file_path)
+                video_path = mount_root / file_path.relative_to("/")
+                strm_path = strm_root / file_path.parent.relative_to("/")
+                if not strm_path.exists():
+                    strm_path.mkdir(parents=True, exist_ok=True)
+                strm_content = str(video_path)
+                # 使用实际文件名（不含路径）来生成strm文件名
+                actual_filename = Path(file).name  # 获取真正的文件名
+                strm_file = strm_path / (Path(actual_filename).stem + ".strm")
+                with open(strm_file, 'w') as f:
+                    f.write(strm_content)
+                init.logger.info(f"成功创建 strm 文件: {strm_file}")
+            except Exception as file_error:
+                init.logger.error(f"处理文件 {file} 时出错: {str(file_error)}")
+                continue
+        await query.edit_message_text(text=f"✅ [{selected_path}]strm文件同步完成！")
         return ConversationHandler.END
     except Exception as e:
-        await context.bot.send_message(chat_id=update.effective_chat.id,
-                                       text=f"❌同步strm文件失败：{str(e)}！")
+        await query.edit_message_text(text=f"❌ 同步strm文件失败：{str(e)}！")
         return ConversationHandler.END
     
 

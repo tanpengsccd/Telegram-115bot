@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
-
 import requests
 import init
 from bs4 import BeautifulSoup
 import time
-from sqlitelib import *
-from download_handler import create_strm_file, notice_emby_scan_library
-from message_queue import add_task_to_queue
-from cover_capture import get_movie_cover
+from app.utils.sqlitelib import *
+from app.handlers.download_handler import create_strm_file, notice_emby_scan_library
+from app.utils.message_queue import add_task_to_queue
+from app.utils.cover_capture import get_movie_cover
+from telegram.helpers import escape_markdown
 
 
 def get_tmdb_id(movie_name):
@@ -23,7 +23,7 @@ def get_tmdb_id(movie_name):
         "user-agent": init.USER_AGENT,
         "accept-language": "zh-CN"
     }
-
+    init.logger.info(f"正在从TMDB搜索电影: {movie_name}")
     try:
         response = requests.get(url=search_url, headers=headers)
         response.raise_for_status()
@@ -52,6 +52,7 @@ def get_tmdb_id(movie_name):
             title = img_tag['alt']
             if title.strip() == movie_name.strip():
                 if '/movie/' not in href:
+                    init.logger.warn(f"[{movie_name}]类型不是电影，115Bot暂时只支持电影的订阅！")
                     return None
 
                 tmdb_id = href.split('/movie/')[-1].split('-')[0]
@@ -63,10 +64,10 @@ def get_tmdb_id(movie_name):
         return int(tmdb_id)
 
     except requests.exceptions.RequestException as e:
-        init.logger.error(f"获取TMDB ID失败: {str(e)}")
+        init.logger.warn(f"获取TMDB ID失败: {str(e)}")
         return None
     except Exception as e:
-        init.logger.error(f"解析TMDB页面失败: {str(e)}")
+        init.logger.warn(f"解析TMDB页面失败: {str(e)}")
         return None
     
 
@@ -196,16 +197,14 @@ def download_from_link(download_url, movie_name, save_path):
     try: 
         # 自动创建目录
         init.openapi_115.create_dir_recursive(save_path)
-        # 清除云端任务，避免重复下载
-        init.openapi_115.clear_cloud_task()
         offline_success = init.openapi_115.offline_download_specify_path(download_url, save_path)
         if not offline_success:
-            init.logger.error(f"❌离线遇到错误！")
+            init.logger.error(f"❌ 离线遇到错误！")
         else:
-            init.logger.info(f"✅[`{download_url}`]添加离线成功")
+            init.logger.info(f"✅ [`{download_url}`]添加离线成功")
             download_success, resource_name = init.openapi_115.check_offline_download_success(download_url)
             if download_success:
-                init.logger.info(f"✅[{resource_name}]离线下载完成")
+                init.logger.info(f"✅ [{resource_name}]离线下载完成")
                 time.sleep(1)
                 if init.openapi_115.is_directory(f"{save_path}/{resource_name}"):
                     # 清除垃圾文件
@@ -233,6 +232,9 @@ def download_from_link(download_url, movie_name, save_path):
     except Exception as e:
         init.logger.error(f"💀下载遇到错误: {str(e)}")
         return False
+    finally:
+        # 清除云端任务，避免重复下载
+        init.openapi_115.clear_cloud_task()
     
     
 def send_message2usr(tmdb_id, sqlite):
@@ -244,9 +246,9 @@ def send_message2usr(tmdb_id, sqlite):
             init.logger.warn(f"未找到TMDB编号为[{tmdb_id}]的记录!")
             return
         sub_user, download_url, size, movie_name, post_url, category_folder = row
-        msg_title = escape_markdown_v2(f"{movie_name}[{tmdb_id}]订阅已下载!")
-        msg_category_folder = escape_markdown_v2(category_folder)
-        msg_size = escape_markdown_v2(str(size))
+        msg_title = escape_markdown(f"{movie_name}[{tmdb_id}]订阅已下载!", version=2)
+        msg_category_folder = escape_markdown(category_folder, version=2)
+        msg_size = escape_markdown(str(size), version=2)
         message = f"""
                 **{msg_title}**
 
@@ -259,26 +261,6 @@ def send_message2usr(tmdb_id, sqlite):
 
     except Exception as e:
         init.logger.error(f"电影[{movie_name}] 添加到队列失败: {e}")
-        
-
-def escape_markdown_v2(text: str) -> str:
-    """
-    转义字符串以符合 Telegram MarkdownV2 的要求。
-    如果字符串被反引号包裹，则内部内容不转义。
-    :param text: 原始字符串
-    :return: 转义后的字符串
-    """
-    # 需要转义的字符
-    escape_chars = r"\_*[]()~`>#+-=|{}.!"
-
-    # 判断是否被反引号包裹
-    if text.startswith("`") and text.endswith("`"):
-        # 反引号包裹的内容不转义
-        return text
-    else:
-        # 转义特殊字符
-        escaped_text = "".join(f"\\{char}" if char in escape_chars else char for char in text)
-        return escaped_text
     
     
 def is_subscribe(movie_name):
@@ -308,8 +290,8 @@ def update_subscribe(movie_name, post_url, download_url):
 
 
 if __name__ == '__main__':
-    # init.init_log()
-    # init.load_yaml_config()
+    init.load_yaml_config()
+    init.init_log()
     # schedule_movie()
-    tmdb_id = get_tmdb_id("赎梦")
+    tmdb_id = get_tmdb_id("终极名单：黑狼")
     print(tmdb_id)

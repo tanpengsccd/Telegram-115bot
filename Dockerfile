@@ -7,7 +7,8 @@ WORKDIR /app
 # 复制app下所有文件到/app
 ADD ./app .
 
-ENV PYTHONPATH="/app"
+# 设置Python模块搜索路径，包含所有需要的目录
+ENV PYTHONPATH="/app:/app/utils:/app/core:/app/handlers:/app/.."
 
 CMD ["python", "115bot.py"]
 

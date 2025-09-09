@@ -1,27 +1,33 @@
 # -*- coding: utf-8 -*-
 
 import json
-from message_queue import add_task_to_queue, queue_worker
-from telegram import Update, BotCommand
-from telegram.ext import ContextTypes, CommandHandler, Application
-import init
 import time
 import asyncio
 import threading
-from auth_handler import register_auth_handlers
-from download_handler import register_download_handlers
-from sync_handler import register_sync_handlers
-from video_handler import register_video_handlers
-from scheduler import start_scheduler_in_thread
-from subscribe_movie_handler import register_subscribe_movie_handlers
-from av_download_handler import register_av_download_handlers
-from offline_task_handler import register_offline_task_handlers
+from telegram import Update, BotCommand
+from telegram.ext import ContextTypes, CommandHandler, Application
+from telegram.helpers import escape_markdown
+
+# 导入init模块（此时__init__.py已经设置了模块路径）
+import init
+
+# 现在可以安全地导入app模块了
+from app.utils.message_queue import add_task_to_queue, queue_worker
+from app.handlers.auth_handler import register_auth_handlers
+from app.handlers.download_handler import register_download_handlers
+from app.handlers.sync_handler import register_sync_handlers
+from app.handlers.video_handler import register_video_handlers
+from app.core.scheduler import start_scheduler_in_thread
+from app.handlers.subscribe_movie_handler import register_subscribe_movie_handlers
+from app.handlers.av_download_handler import register_av_download_handlers
+from app.handlers.offline_task_handler import register_offline_task_handlers
 
 
 def get_version(md_format=False):
+    version = "v3.1.0"
     if md_format:
-        return r"v3\.1\.0"
-    return "v3.1.0"
+        return escape_markdown(version, version=2)
+    return version
 
 def get_help_info():
     version = get_version()
@@ -30,6 +36,7 @@ def get_help_info():
 <b>🔧 命令列表</b>\n
 <code>/start</code> - 显示帮助信息\n
 <code>/auth</code> - <i>115扫码授权 (首次使用必选)</i>\n
+<code>/reload</code> - <i>重载配置</i>\n
 <code>/dl</code> - 添加离线下载 [磁力|ed2k|https]\n
 <code>/rl</code> - 查看重试列表\n
 <code>/av</code> - <i>下载番号资源 (自动匹配磁力)</i>\n
@@ -62,6 +69,12 @@ def get_help_info():
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_info = get_help_info()
     await context.bot.send_message(chat_id=update.effective_chat.id, text=help_info, parse_mode="html", disable_web_page_preview=True)
+    
+async def reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    init.load_yaml_config()
+    init.logger.info("Reload configuration success:")
+    init.logger.info(json.dumps(init.bot_config))
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="🔁重载配置完成！", parse_mode="html")
 
 def start_async_loop():
     """启动异步事件循环的线程"""
@@ -82,12 +95,17 @@ def send_start_message():
     version = get_version()  
     if init.openapi_115 is None:
         return
-    welcome_text = init.openapi_115.welcome_message()
-    if welcome_text:
+    
+    line1, line2, line3, line4 = init.openapi_115.welcome_message()
+    line5 = escape_markdown(f"Telegram-115Bot {version} 启动成功！", version=2)
+    if line1 and line2 and line3 and line4:
         formatted_message = f"""
-`{welcome_text}`
+{line1}
+{line2}
+{line3}
+{line4}
 
-`Telegram-115Bot {version} 启动成功！`
+{line5}
 
 发送 `/start` 查看操作说明"""
         
@@ -110,6 +128,7 @@ def get_bot_menu():
     return  [
         BotCommand("start", "获取帮助信息"),
         BotCommand("auth", "115扫码授权"),
+        BotCommand("reload", "重载配置"),
         BotCommand("dl", "添加离线下载"),
         BotCommand("rl", "查看重试列表"),
         BotCommand("av", "指定番号下载"),
@@ -137,7 +156,7 @@ if __name__ == '__main__':
     message_thread = threading.Thread(target=start_async_loop, daemon=True)
     message_thread.start()
     # 等待消息队列准备就绪
-    import message_queue
+    import app.utils.message_queue as message_queue
     max_wait = 30  # 最多等待30秒
     wait_count = 0
     while True:
@@ -156,8 +175,12 @@ if __name__ == '__main__':
     token = init.bot_config['bot_token']
     application = Application.builder().token(token).post_init(post_init).build()    
 
+    # 启动帮助
     start_handler = CommandHandler('start', start)
     application.add_handler(start_handler)
+    # 重载配置
+    reload_handler = CommandHandler('reload', reload)
+    application.add_handler(reload_handler)
     
     # 初始化115open对象
     init.initialize_115open()
@@ -167,16 +190,18 @@ if __name__ == '__main__':
     register_auth_handlers(application)
     # 注册下载
     register_download_handlers(application)
+    # 注册电影订阅 
+    register_subscribe_movie_handlers(application)
+    # 注册AV下载
+    register_av_download_handlers(application)
     # 注册离线任务
     register_offline_task_handlers(application)
     # 注册同步
     register_sync_handlers(application)
     # 注册视频
     register_video_handlers(application)
-    # 注册AV下载
-    register_av_download_handlers(application)
-    # 注册电影订阅
-    register_subscribe_movie_handlers(application)
+
+
 
     # 启动机器人轮询
     try:

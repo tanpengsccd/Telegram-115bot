@@ -32,9 +32,9 @@ ENV/
 
 # Project specific
 **/config.yaml
-config/user_session.session
-config/db.db
-config/115_tokens.json
+**/user_session.session
+**/db.db
+**/115_tokens.json
 tmp/
 *.log
 images/qrcode.png

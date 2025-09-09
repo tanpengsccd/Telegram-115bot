@@ -12,6 +12,15 @@
 [加入](https://t.me/+FTPNla_7SCc3ZWVl)
 
 ## 更新日志
+v3.2.0
+- 增加涩花爬虫功能，每天凌晨爬取指定版块的前一天数据并离线到115，可在配置文件中按需开启或关闭
+- 优化“/dl”，“/av”命令交互体验，升级为异步模式，提交离线下载时不再阻塞，最大下载队列均为5
+- 优化“/dl”命令交互流程，下载失败，添加到重试列表时需要制定TMDB名称，重试成功时将不再询问
+- 添加“/reload”重载配置功能
+- 配置文件检查，如果配置文件不存在，自动生成配置模板
+- 添加日志文件，默认保存在"/config/115bot.log"，重启容器会覆盖日志
+- 代码优化，bug修复
+
 v3.1.0
 - 删除AV订阅功能，添加AV日更功能，每日定时更新最新资源并离线到115，可在配置文件中开启或关闭。针对离线失败的任务，每6个小时自动重试，直到成功为止。
 - 添加通过输入番号直接离线功能，例如：输入 'av ipz-266'自动离线到115，省去搜索磁力的步骤
@@ -125,7 +134,7 @@ v2.2.0
      ```
    - 编辑 `config.yaml`，填入必要配置：
      - Telegram Bot Token
-     - 授权用户列表
+     - Telegram授权使用用户
      - 115 相关配置
      - 目录映射设置
 
@@ -144,7 +153,8 @@ v2.2.0
      --name tg-bot-115 \
      --restart unless-stopped \
      -e TZ=Asia/Shanghai \
-     -v $PWD/config:/config \
+     -v /path/to/config:/config \
+     -v /path/to/tmp:/tmp \
      -v /path/to/media:/media \
      -v /path/to/CloudNAS:/CloudNAS:rslave \
      115bot:latest
@@ -162,8 +172,9 @@ v2.2.0
       # privileged: True
       restart: unless-stopped
       volumes:
-        - $PWD/config:/config
-        - /path/to/media:/media # Emby媒体库目录（软链目录）
+        - /path/to/config:/config # 配置目录
+        - /path/to/tmp:/tmp       # 临时目录
+        - /path/to/media:/media   # Emby媒体库目录（软链目录）
         - /path/to/CloudNAS:/CloudNAS:rslave # CloudDrive2挂载目录
    ```
 
@@ -173,17 +184,26 @@ v2.2.0
 
 ### 目录结构
 ```
-115bot/
-├── app/              # 应用源码
-├── config/           # 配置文件
-│   ├── config.yaml   # 主配置文件
-│   ├── cookie.txt    # 115网盘Cookie
-│   └── db.db         # SQLite数据库
-├── tmp/              # 临时文件目录
-├── images/           # 图片资源目录
-├── Dockerfile        # 应用 Dockerfile
-├── Dockerfile.base   # 基础镜像 Dockerfile
-└── requirements.txt  # Python 依赖
+.
+├── app
+│   ├── 115bot.py                 # 程序入口脚本
+│   ├── config.yaml.example       # 配置文件模板
+│   ├── core                      # 核心功能
+│   ├── handlers                  # Telegram handlers
+│   ├── images                    # 图片
+│   ├── init.py                   # 初始化脚本
+│   └── utils                     # 有用的工具
+├── build.sh                      # 本地构建脚本
+├── config                        # 配置目录
+├── create_tg_session_file.py     # 创建tg_session脚本
+├── docker-compose.yaml           # docker-compose
+├── Dockerfile                    
+├── Dockerfile.base
+├── legacy                        # 历史遗留
+├── LICENSE
+├── README_EN.md
+├── README.md
+├── requirements.txt              # 项目依赖
 ```
 
 ## 使用指南
@@ -192,6 +212,7 @@ v2.2.0
 
 - `/start`   - 显示帮助信息
 - `/auth`    - 115 授权设置
+- `reload`   - 重载配置
 - `/dl`      - 添加离线下载
 - `/rl`      - 重试列表
 - `/av`      - 番号下载
@@ -201,7 +222,7 @@ v2.2.0
 
 ### 115 开放平台申请
 
-**强烈建议申请 115 开放平台**以获得更好的使用体验：
+**强烈建议申请 115 开放平台以获得更好的使用体验！**
 - 申请地址：[115开放平台](https://open.115.com/)
 - 审核通过后将 `115_app_id` 填入配置文件中
 
@@ -241,7 +262,7 @@ tg_api_hash: 1yh3j4k9dsk0fj3jdufnwrhf62j1k33f
 ```
 MIT License
 
-Copyright (c) 2024 Fei
+Copyright (c) 2025 qiqiandfei
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -261,6 +282,11 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## 免责声明
+本项目仅供学习和研究使用，请遵守相关法律法规，不得用于商业用途。使用者需自行承担使用风险！
+
+如果这个项目对您有帮助，请献上一个⭐！
 
 ## Buy me a coffee~
 ![请我喝咖啡](https://alist.qiqiandfei.fun:8843/d/Syncthing/yufei/%E4%B8%AA%E4%BA%BA/%E8%B5%9E%E8%B5%8F.png)

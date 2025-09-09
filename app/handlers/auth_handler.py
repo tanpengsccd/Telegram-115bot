@@ -12,29 +12,26 @@ import init
 async def auth_pkce_115(update: Update, context: ContextTypes.DEFAULT_TYPE):
     usr_id = update.message.from_user.id
     if init.check_user(usr_id):
-        init.openapi_115.auth_pkce(usr_id, init.bot_config['115_app_id'])
-        if init.openapi_115.access_token and init.openapi_115.refresh_token:
-            await update.message.reply_text("✅授权成功！")
+        if check_115_app_id():
+            init.openapi_115.auth_pkce(usr_id, init.bot_config['115_app_id'])
+            if init.openapi_115.access_token and init.openapi_115.refresh_token:
+                await update.message.reply_text("✅ 授权成功！")
+            else:
+                await update.message.reply_text("⚠️ 授权失败，请检查配置文件中的app_id是否正确！")
         else:
-            await update.message.reply_text("⚠️授权失败，请检查配置文件中的app_id是否正确！")
+            await update.message.reply_text("⚠️ 115开放平台APPID未配置！")
     else:
-        await update.message.reply_text(f"⚠️对不起，您无权使用115机器人！")
+        await update.message.reply_text(f"⚠️ 对不起，您无权使用115机器人！")
     # 结束对话
     return ConversationHandler.END
 
 
-# async def receive_cookie(update: Update, context: ContextTypes.DEFAULT_TYPE):
-#     # 获取用户发送的 cookie
-#     user_cookie = update.message.text
-#     if "UID=" not in user_cookie or "SEID=" not in user_cookie or "CID=" not in user_cookie:
-#         await update.message.reply_text("⚠️Cookie 格式输入有误，请检查！")
-#     else:
-#         with open(init.COOKIE_FILE, mode='w', encoding='utf-8') as f:
-#             f.write(user_cookie)
-#         # 可以在这里处理或存储 cookie
-#         await update.message.reply_text(f"✅设置115Cookie成功！")
-#     # 结束对话
-#     return ConversationHandler.END
+def check_115_app_id():
+    api_key = init.bot_config.get('115_app_id')
+    if api_key is None or api_key.strip() == "" or api_key.strip().lower() == "your_115_app_id":
+        init.logger.error("115 Open APPID未配置!")
+        return False
+    return True
 
 
 async def quit_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):

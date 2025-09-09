@@ -21,11 +21,11 @@ SELECT_MAIN_CATEGORY_VIDEO, SELECT_SUB_CATEGORY_VIDEO = range(20, 22)
 async def save_video2115(update: Update, context: ContextTypes.DEFAULT_TYPE):
     usr_id = update.message.from_user.id
     if not init.check_user(usr_id):
-        await update.message.reply_text("⚠️对不起，您无权使用115机器人！")
+        await update.message.reply_text("⚠️ 对不起，您无权使用115机器人！")
         return ConversationHandler.END
     
     if not init.tg_user_client:
-        await update.message.reply_text("⚠️如需使用此功能，请先配置[bot_name],[tg_app_id]和[tg_app_hash]！")
+        await update.message.reply_text("⚠️ 如需使用此功能，请先配置[bot_name],[tg_app_id]和[tg_app_hash]！")
         return ConversationHandler.END
 
     if update.message and update.message.video:
@@ -111,7 +111,7 @@ async def select_sub_category_video(update: Update, context: ContextTypes.DEFAUL
     if saved_path != new_file_path:
         os.rename(saved_path, new_file_path)
     await context.bot.send_message(chat_id=update.effective_chat.id,
-                                   text=f"✅视频文件[{new_file_path}]下载完成，正在上传至115...")
+                                   text=f"✅ 视频文件[{new_file_path}]下载完成，正在上传至115...")
     file_size = os.path.getsize(new_file_path)
     # 计算文件的SHA1值
     sha1_value = file_sha1(new_file_path)
@@ -124,11 +124,11 @@ async def select_sub_category_video(update: Update, context: ContextTypes.DEFAUL
                                        request_times=1)
     if is_upload:
         if bingo:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="⚡已秒传！")
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="⚡ 已秒传！")
         else:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="✅已上传！")
+            await context.bot.send_message(chat_id=update.effective_chat.id, text="✅ 已上传！")
     else:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌上传失败！")
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ 上传失败！")
 
     # 删除本地文件
     for filename in os.listdir(init.TEMP):

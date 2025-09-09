@@ -3,6 +3,11 @@ import os
 import base64
 import hashlib
 import re
+import sys
+current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+parent_dir = os.path.dirname(current_dir)
+sys.path.append(parent_dir)
+sys.path.append(current_dir)
 import init
 import qrcode
 import json
@@ -10,8 +15,9 @@ import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from functools import wraps
-from message_queue import add_task_to_queue
-from alioss import upload_file_to_oss
+from app.utils.message_queue import add_task_to_queue
+from app.utils.alioss import upload_file_to_oss
+from telegram.helpers import escape_markdown
 
 
 
@@ -233,6 +239,22 @@ class OpenAPI_115:
             if response['code'] == 40140125:
                 return response
             return None
+        
+    @handle_token_expiry
+    def get_file_info_by_id(self, file_id: str):
+        url = f"{self.base_url}/open/folder/get_info"
+        params = {"file_id": file_id}
+        response = self._make_api_request('GET', url, params=params)
+        
+        # 如果成功获取文件信息，记录日志
+        if isinstance(response, dict) and response.get('code') == 0:
+            init.logger.debug(f"获取文件信息成功: {response}")
+            return response['data']
+        else:
+            init.logger.warn(f"获取文件信息失败: {response}")
+            if response['code'] == 40140125:
+                return response
+            return None
     
     @handle_token_expiry
     def offline_download(self, download_url):
@@ -278,12 +300,40 @@ class OpenAPI_115:
                 return response
             return None
 
+    # @handle_token_expiry
+    def get_offline_tasks_by_page(self, page=1):
+        url = f"{self.base_url}/open/offline/get_task_list"
+        params = {"page": page}
+        response = self._make_api_request('GET', url, params=params)
+        if isinstance(response, dict) and response.get('code') == 0 and 'data' in response:
+            return response['data'] 
+        else:
+            init.logger.warn(f"获取离线下载任务列表失败: {response}")
+            if isinstance(response, dict) and response.get('code') == 40140125:
+                if response['code'] == 40140125:
+                    return response
+            return None
+    
     @handle_token_expiry
     def get_offline_tasks(self):
         url = f"{self.base_url}/open/offline/get_task_list"
         response = self._make_api_request('GET', url)
+        task_list = []
         if isinstance(response, dict) and response.get('code') == 0 and 'data' in response:
-            return response['data'] 
+            page_count = response['data'].get('page_count', 1)
+            for i in range(1, page_count + 1):
+                tasks = self.get_offline_tasks_by_page(i)
+                if tasks and 'tasks' in tasks:
+                    for task in tasks['tasks']:
+                        task_list.append({
+                            'name': task['name'],
+                            'url': task['url'],
+                            'status': task['status'],
+                            'percentDone': task['percentDone'],
+                            'info_hash': task['info_hash']
+                        })
+                time.sleep(1)  # 避免请求过快
+            return task_list  
         else:
             init.logger.warn(f"获取离线下载任务列表失败: {response}")
             if isinstance(response, dict) and response.get('code') == 40140125:
@@ -436,7 +486,7 @@ class OpenAPI_115:
             init.logger.info(f"文件或目录删除成功: {file_ids}")
             return True
         else:
-            init.logger.warn(f"文件或目录删除失败: {response['message']}")
+            init.logger.warn(f"文件或目录删除失败: {response}")
             if response['code'] == 40140125:
                 return response
             return None
@@ -609,11 +659,34 @@ class OpenAPI_115:
             if response['code'] == 40140125:
                 return response
             return None
-    
-    
+        
+    @handle_token_expiry
+    def get_file_play_url(self, file_path):
+        file_info = self.get_file_info(file_path)
+        if not file_info:
+            return None
+        file_list = self.get_file_list(file_info['file_id'], file_type=4)
+        if not file_list:
+            return None
+        video_name = file_list[0]['fn']
+        video_info = self.get_file_info(f"{file_path}/{video_name}")
+        pick_code = video_info.get('pick_code', '')
+        url = f"{self.base_url}/open/video/play"
+        params = {
+            "pick_code": pick_code
+        }
+        response = self._make_api_request('GET', url, params=params)
+        if isinstance(response, dict) and response.get('code') == 0:
+            init.logger.info(f"获取视频播放链接成功: {response}")
+            return response['data']['video_url'][0]['url']
+        else:
+            init.logger.warn(f"获取视频播放链接失败: {response}")
+            if response['code'] == 40140125:
+                return response
+        return None
+
     def welcome_message(self):
         """欢迎消息"""
-        welcome_text = ""
         user_info = self.get_user_info()
         quota_info = self.get_quota_info()
         if user_info:
@@ -623,139 +696,75 @@ class OpenAPI_115:
             remaining_space = user_info['rt_space_info']['all_remain']['size_format']
             vip_info = user_info.get('vip_info', {})
             expire_date = datetime.fromtimestamp(vip_info.get('expire', 0), tz=timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
-            welcome_text = f"👋 {user_name}您好， 欢迎使用Telegram-115Bot！\n"
-            welcome_text += f"会员等级：{vip_info.get('level_name', '')}；到期时间：{expire_date}\n"
-            welcome_text += f"总空间：{total_space} 已用：{used_space} 剩余：{remaining_space}\n"
-            welcome_text += f"离线配额：{quota_info['used']}/{quota_info['count']}\n"
-        return welcome_text
+            line1 = escape_markdown(f"👋 [{user_name}]您好， 欢迎使用Telegram-115Bot！", version=2)
+            line2 = escape_markdown(f"会员等级：{vip_info.get('level_name', '')}；到期时间：{expire_date}", version=2)
+            line3 = escape_markdown(f"总空间：{total_space} 已用：{used_space} 剩余：{remaining_space}", version=2)
+            line4 = escape_markdown(f"离线配额：{quota_info['used']}/{quota_info['count']}", version=2)   
+        return line1, line2, line3, line4
 
 
     def check_offline_download_success(self, url, offline_timeout=300):
         time_out = 0
         task_name = ""
         while time_out < offline_timeout:
-            offline_info = self.get_offline_tasks()
-            if not offline_info:
-                time.sleep(5)
-                time_out += 5
-                continue
-            
-            # 检查是否是错误响应
-            if isinstance(offline_info, dict) and 'code' in offline_info:
-                init.logger.warn(f"获取离线任务列表返回错误: {offline_info.get('message', '未知错误')}")
-                time.sleep(5)
-                time_out += 5
-                continue
-            
-            # 检查数据格式
-            if not isinstance(offline_info, dict) or 'tasks' not in offline_info:
-                init.logger.warn(f"离线任务数据格式异常")
-                time.sleep(5)
-                time_out += 5
-                continue
-            
-            tasks = offline_info['tasks']
-            if not isinstance(tasks, list):
-                init.logger.warn(f"任务列表格式异常")
-                time.sleep(5)
-                time_out += 5
-                continue
+            tasks = self.get_offline_tasks()
+            if not tasks:
+                return False, ""
             
             for task in tasks:
-                if not isinstance(task, dict):
-                    continue
                 # 判断任务的URL是否匹配
                 if task.get('url') == url:
                     task_name = task.get('name', '')
                     # 检查任务状态
-                    if task.get('status') == 2:
+                    if task.get('status') == 2 or task.get('percentDone') == 100:
                         init.logger.info(f"[{task_name}]离线下载任务成功！")
                         return True, task_name
                     else:
-                        time.sleep(5)
-                        time_out += 5
+                        time.sleep(10)
+                        time_out += 10
                     break
         init.logger.warn(f"[{task_name}]离线下载超时!")
         return False, task_name
     
     def check_offline_download_success_no_waite(self, url):
-        offline_info = self.get_offline_tasks()
-        if not offline_info:
-            return False, ""
-        
-        # 检查是否是错误响应
-        if isinstance(offline_info, dict) and 'code' in offline_info:
-            init.logger.warn(f"获取离线任务列表返回错误: {offline_info.get('message', '未知错误')}")
-            return False, ""
-        
-        # 检查数据格式
-        if not isinstance(offline_info, dict) or 'tasks' not in offline_info:
-            init.logger.warn(f"离线任务数据格式异常")
-            return False, ""
-        
-        tasks = offline_info['tasks']
-        if not isinstance(tasks, list):
-            init.logger.warn(f"任务列表格式异常")
-            return False, ""
-        
         task_name = ""
         found_task = False
+        tasks = self.get_offline_tasks()
+        if not tasks:
+            return False, ""
         
         for task in tasks:
-            if not isinstance(task, dict):
-                continue
             # 判断任务的URL是否匹配
             if task.get('url') == url:
                 task_name = task.get('name', '')
                 found_task = True
                 # 检查任务状态
-                if task.get('status') == 2:
+                if task.get('status') == 2 or task.get('percentDone') == 100:
                     init.logger.info(f"[{task_name}]离线下载任务成功！")
                     return True, task_name
                 break  # 找到任务就退出循环，继续检查状态
         
         if found_task:
             init.logger.warn(f"[{task_name}]离线下载任务未完成!")
+            return False, task_name
         else:
             init.logger.warn(f"未找到匹配的离线下载任务: {url}")
-        
+            
         return False, task_name
     
     
     def clear_failed_task(self, url):
-        offline_info = self.get_offline_tasks()
-        
-        # 防护性检查：确保offline_info是有效的字典且包含tasks键
-        if not offline_info:
-            init.logger.warn(f"获取离线任务列表失败，无法清理失败任务: {url}")
+        tasks = self.get_offline_tasks()
+        if not tasks:
             return
-        
-        # 检查是否是错误响应（包含code字段）
-        if isinstance(offline_info, dict) and 'code' in offline_info:
-            init.logger.warn(f"获取离线任务列表返回错误: {offline_info.get('message', '未知错误')}")
-            return
-        
-        # 检查是否包含tasks键且tasks是列表
-        if not isinstance(offline_info, dict) or 'tasks' not in offline_info:
-            init.logger.warn(f"离线任务数据格式异常，无法清理失败任务: {url}")
-            return
-        
-        tasks = offline_info['tasks']
-        if not isinstance(tasks, list):
-            init.logger.warn(f"任务列表格式异常，无法清理失败任务: {url}")
-            return
-        
         info_hash = ""
         for task in tasks:
-            if isinstance(task, dict) and task.get('url') == url and task.get('status') != 2:
+            if isinstance(task, dict) and task.get('url') == url:
                 info_hash = task.get('info_hash', '')
+                # 删除离线文件
+                self.del_faild_offline_task(info_hash)
                 break
-        
-        if info_hash:
-            # 删除离线文件
-            self.del_faild_offline_task(info_hash)
-        else:
-            init.logger.info(f"未找到需要清理的失败任务: {url}")
+
         
     def get_files_from_dir(self, path, file_type=4):
         """获取指定目录下的所有文件"""
@@ -769,6 +778,27 @@ class OpenAPI_115:
         file_list = self.get_file_list(file_info['file_id'], file_type=file_type)
         for file in file_list:
             video_list.append(file['fn'])
+        return video_list
+    
+    def get_sync_dir(self, path, file_type=4):
+        """获取指定目录下的所有文件"""
+        video_list = []
+        file_info = self.get_file_info(path)
+        if not file_info:
+            init.logger.warn(f"获取目录信息失败: {file_info}")
+            return video_list
+        
+        # 文件类型；1.文档；2.图片；3.音乐；4.视频；5.压缩；6.应用；7.书籍
+        file_list = self.get_file_list(file_info['file_id'], file_type=file_type)
+        if not file_list:
+            init.logger.warn(f"目录 {path} 中没有找到视频文件")
+            return video_list
+            
+        for file in file_list:
+            file_info = self.get_file_info_by_id(file['pid'])
+            folder_name = file_info['file_name']
+            video_list.append(f"{folder_name}/{file['fn']}")
+
         return video_list
     
     def is_directory(self, path):
@@ -828,7 +858,7 @@ class OpenAPI_115:
                 fid_list.append(file['fid'])
                 init.logger.info(f"[{file['fn']}]已添加到清理列表")
         
-        if file_list:
+        if fid_list:
             file_ids = ",".join(fid_list)
             self.delet_file(file_ids)
     
@@ -907,7 +937,7 @@ def calculate_sha1(file_path):
                 sha1.update(chunk)
         return sha1.hexdigest()
     except FileNotFoundError:
-        print(f"错误：文件未找到 -> {file_path}")
+        init.logger.error(f"错误：文件未找到 -> {file_path}")
         return None
     
 def file_sha1_by_range(file_path, start, end):
@@ -955,8 +985,12 @@ if __name__ == "__main__":
     init.init_log()
     init.load_yaml_config()
     app = OpenAPI_115()
-    quota_info = app.get_quota_info()
-    print(f"离线下载配额: {quota_info['used']}/{quota_info['count']}")
+    app.offline_download_specify_path("magnet:?xt=urn:btih:2A93EFB4E2E8ED96B52207D9C5AA4FF2F7E8D9DF", "/test")
+    time.sleep(10)
+    dl_flg, resource_name = app.check_offline_download_success_no_waite("magnet:?xt=urn:btih:2A93EFB4E2E8ED96B52207D9C5AA4FF2F7E8D9DF")
+    print(dl_flg, resource_name)
+    # quota_info = app.get_quota_info()
+    # print(f"离线下载配额: {quota_info['used']}/{quota_info['count']}")
 
     # app.auto_clean(f"{init.bot_config['offline_path']}/nyoshin-n1996")
     # app.clear_failed_task("magnet:?xt=urn:btih:C506443C77A1F7EC3D18718F0DAC6AAA2BCE1FB6&dn=nyoshin-n1996")  # 示例URL
