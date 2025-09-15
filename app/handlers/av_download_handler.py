@@ -78,9 +78,6 @@ async def select_sub_category(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data["selected_path"] = selected_path
     user_id = update.effective_user.id
     
-    # 自动创建目录
-    init.openapi_115.create_dir_recursive(selected_path)
-    
     # 抓取磁力
     await query.edit_message_text(f"🔍 正在搜索 [{av_number}] 的磁力链接...")
     av_result = get_av_result(av_number)
@@ -137,7 +134,6 @@ def download_task(av_result, av_number, save_path, user_id):
             title = item['title']
             # 离线下载到115
             offline_success = init.openapi_115.offline_download_specify_path(magnet, save_path)
-
             if not offline_success:
                 continue
             
@@ -184,9 +180,10 @@ def download_task(av_result, av_number, save_path, user_id):
         add_task_to_queue(user_id, None, f"❌ [{av_number}] 所有磁力链接都下载失败，请稍后重试！")
         
     except Exception as e:
-        init.logger.error(f"下载任务执行出错: {str(e)}")
+        init.logger.warn(f"💀下载遇到错误: {str(e)}")
         from app.utils.message_queue import add_task_to_queue
-        add_task_to_queue(user_id, None, f"❌ [{av_number}] 下载任务执行出错: {str(e)}")
+        add_task_to_queue(init.bot_config['allowed_user'], f"{init.IMAGE_PATH}/male023.png",
+                            message=f"❌ 下载任务执行出错: {str(e)}")
     finally:
         # 清空离线任务
         init.openapi_115.clear_cloud_task()

@@ -15,6 +15,7 @@ def offline_task_retry():
 
 
 def sehua_offline():
+    save_path_list= []
     check_results = []
     sections = init.bot_config.get('sehua_spider', {}).get('sections', [])
     for section in sections:
@@ -29,11 +30,14 @@ def sehua_offline():
             init.logger.info(f"[涩花][{section_name}]板块，找到 {len(results)} 个需要离线的任务")
             check_results.extend(results)
             # 分批处理，每100个任务一批
-            create_offline_url_list = create_offline_url(results)
-            if create_offline_url_list:
-                for offline_tasks in create_offline_url_list:
-                    # 离线到115
-                    offline2115(offline_tasks, len(results), save_path)
+            offline_groups = create_offline_group_by_save_path(results)
+            if offline_groups:
+                for save_path, batches in offline_groups.items():
+                    if os.path.dirname(save_path) not in save_path_list:
+                        save_path_list.append(os.path.dirname(save_path))
+                    for batch_tasks in batches:
+                        task_count = len(batch_tasks.split('\n')) 
+                        offline2115(batch_tasks, task_count, save_path)
             else:
                 init.logger.warn("涩花离线任务未执行，可能是115离线配额不足，请检查115账号状态！")
                 add_task_to_queue(init.bot_config['allowed_user'], f"{init.IMAGE_PATH}/male023.png", "涩花离线任务未执行，可能是115离线配额不足，请检查115账号状态！")
@@ -67,16 +71,16 @@ def sehua_offline():
             asia_uncensored_count += 1
         elif section_name == '高清中文字幕':
             hd_subtitle_count += 1
-        save_path = get_sehua_save_path(section_name)
+        save_path = item['save_path']
         for task in offline_task_status:
             if task['url'] == magnet:
                 if task['status'] == 2 and task['percentDone'] == 100:
-                    sehua_success_proccesser(item, save_path, task['name'], success_counters)
+                    sehua_success_proccesser(item, save_path, task, success_counters)
                     images.append(item['image_path'])
                 else:
                     init.logger.warn(f"{item['title']} 离线下载失败或未完成。")
                     # 删除离线失败的文件
-                    init.openapi_115.clear_failed_task(item['magnet'])
+                    init.openapi_115.del_faild_offline_task(task['info_hash'])
                 break
 
     # 从共享列表中获取最终的成功计数
@@ -111,6 +115,10 @@ def sehua_offline():
     if messages:
         final_message = "**涩花离线任务完成情况:**\n" + "\n".join(messages)
         add_task_to_queue(init.bot_config['allowed_user'], f"{init.IMAGE_PATH}/sehua_daily_update.png", final_message)
+    # 删除垃圾文件
+    for path in save_path_list:
+        init.openapi_115.auto_clean_all(path)
+        time.sleep(10)
     # 清空离线任务
     init.openapi_115.clear_cloud_task()
     # 删除临时文件
@@ -118,6 +126,8 @@ def sehua_offline():
     
     
 def del_images(images):
+    if not images:
+        return
     for image_path in images:
         if image_path and os.path.exists(image_path):
             try:
@@ -128,7 +138,7 @@ def del_images(images):
     init.logger.info("所有临时图片文件已删除!")
     
                 
-def sehua_success_proccesser(item, save_path, resource_name, success_list):
+def sehua_success_proccesser(item, save_path, task, success_list):
     id = item['id']
     section_name = item['section_name']
     av_number = item['av_number']
@@ -142,14 +152,10 @@ def sehua_success_proccesser(item, save_path, resource_name, success_list):
     image_path = item['image_path']
 
     # 处理文件重命名和清理
-    if section_name != '国产原创' and av_number != resource_name:
-        old_name = f"{save_path}/{resource_name}"
-        init.openapi_115.rename(old_name, av_number)
-        # 删除垃圾文件
-        init.openapi_115.auto_clean(f"{save_path}/{av_number}")
-    else:
-        init.openapi_115.auto_clean(f"{save_path}/{resource_name}")
-    
+    # if section_name != '国产原创' and av_number != task['name']:
+    #     old_name = f"{save_path}/{task['name']}"
+    #     init.openapi_115.rename_by_id(task['file_id'], old_name, av_number)
+
     # 更新数据库状态
     with SqlLiteLib() as sqlite:
         sql_update = "UPDATE sehua_data SET is_download=1 WHERE id=?"
@@ -247,12 +253,12 @@ def av_daily_offline():
         for task in offline_task_status:
             if task['url'] == item['magnet']:
                 if task['status'] == 2 and task['percentDone'] == 100:
-                    av_daily_success_proccesser(item, task['name'])
+                    av_daily_success_proccesser(item, task)
                     item['success'] = True
                 else:
                     init.logger.warn(f"{item['av_number']} 离线下载失败或未完成。")
                     # 删除离线失败的文件
-                    init.openapi_115.clear_failed_task(item['magnet'])
+                    init.openapi_115.del_faild_offline_task(task['info_hash'])
                 break
     total_count = len(update_list)
     success_count = sum(1 for item in update_list if item['success'])
@@ -263,25 +269,20 @@ def av_daily_offline():
         message += "\n失败的任务会在下次自动重试，请留意日志或通知！"
 
     add_task_to_queue(init.bot_config['allowed_user'], f"{init.IMAGE_PATH}/av_daily_update.png", message)
+    # 删除垃圾文件
+    init.openapi_115.auto_clean_all(init.bot_config.get('av_daily_update', {}).get('save_path', '/AV/日更'))
     # 清空离线任务
     init.openapi_115.clear_cloud_task()
     
     
-def av_daily_success_proccesser(item, resource_name, clean_flg=True):
+def av_daily_success_proccesser(item, task):
     save_path = init.bot_config.get('av_daily_update', {}).get('save_path', '/AV/日更')
     
     # 如果资源名与番号不一致，重命名
-    if item['av_number'].upper() != resource_name.upper():
-        old_name = f"{save_path}/{resource_name}"
-        new_name = item['av_number'].upper()
-        init.openapi_115.rename(old_name, new_name)
-        final_path = f"{save_path}/{new_name}"
-    else:
-        final_path = f"{save_path}/{resource_name}"
-    
-    # 清理垃圾文件（只有在clean_flg为True时才执行）
-    if clean_flg:
-        init.openapi_115.auto_clean(final_path)
+    # if item['av_number'].upper() != task['name'].upper():
+    #     old_name = f"{save_path}/{task['name']}"
+    #     new_name = item['av_number'].upper()
+    #     init.openapi_115.rename_by_id(task['file_id'], old_name, new_name)
     
     # 更新数据库状态
     with SqlLiteLib() as sqlite:
@@ -312,8 +313,6 @@ def av_daily_success_proccesser(item, resource_name, clean_flg=True):
 
 
 def offline2115(offline_tasks, task_count, save_path):
-    # 确保目录存在
-    init.openapi_115.create_dir_recursive(save_path)
     
     # 调用115的离线下载API
     offline_success = init.openapi_115.offline_download_specify_path(
@@ -325,14 +324,6 @@ def offline2115(offline_tasks, task_count, save_path):
         init.logger.info(f"{task_count}个离线任务添加离线成功!")
 
     time.sleep(2)
-    
-def get_sehua_save_path(_section_name):
-    sections = init.bot_config.get('sehua_spider', {}).get('sections', [])
-    for section in sections:
-        section_name = section.get('name', '')
-        if section_name == _section_name:
-            return section.get('save_path', f'/AV/涩花/{section_name}')
-    return f'/AV/涩花/{_section_name}'
 
 def create_offline_url(res_list):
     offline_tasks = ""
@@ -356,6 +347,54 @@ def create_offline_url(res_list):
     if offline_tasks:
         offline_tasks_list.append(offline_tasks[:-1])  # 去掉最后的换行符
     return offline_tasks_list
+
+
+def create_offline_group_by_save_path(res_list):
+    """
+    根据保存路径分组离线任务，每个路径下的任务不超过100个
+    """
+    quota_info = init.openapi_115.get_quota_info()
+    left_offline_quota = quota_info['count'] - quota_info['used']
+    
+    # 离线配额不足
+    if left_offline_quota < len(res_list):
+        return None
+    
+    # 按保存路径分组
+    path_groups = {}
+    for item in res_list:
+        if not item.get('magnet'):
+            init.logger.warn(f"跳过无效的离线任务，标题: {item.get('title', 'Unknown')}，下载链接为空")
+            continue
+            
+        save_path = item.get('save_path')
+        if save_path not in path_groups:
+            path_groups[save_path] = []
+        path_groups[save_path].append(item['magnet'])
+    
+    # 每个路径下的任务分批处理，每批最多100个
+    result = {}
+    for save_path, magnets in path_groups.items():
+        batches = []
+        current_batch = ""
+        count = 0
+        
+        for magnet in magnets:
+            current_batch += magnet + "\n"
+            count += 1
+            
+            if count == 100:
+                batches.append(current_batch[:-1])  # 去掉最后的换行符
+                current_batch = ""
+                count = 0
+        
+        # 添加剩余的任务
+        if current_batch:
+            batches.append(current_batch[:-1])  # 去掉最后的换行符
+            
+        result[save_path] = batches
+    
+    return result
 
 
 if __name__ == '__main__':

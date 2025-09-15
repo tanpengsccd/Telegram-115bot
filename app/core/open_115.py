@@ -283,8 +283,7 @@ class OpenAPI_115:
         url = f"{self.base_url}/open/offline/add_task_urls"
         file_info = self.get_file_info(save_path)
         if not file_info:
-            init.logger.warn(f"获取离线保存目录信息失败: {file_info}")
-            return False
+            self.create_dir_recursive(save_path)
         
         data = {
             "urls": download_url,
@@ -295,10 +294,10 @@ class OpenAPI_115:
             init.logger.info(f"离线下载任务添加成功: {response}")
             return True
         else:
-            init.logger.warn(f"离线下载任务添加失败: {response['message']}")
             if response['code'] == 40140125:
                 return response
-            return None
+            init.logger.warn(f"离线下载任务添加失败: {response['message']}")
+            raise Exception(response['message'])
 
     # @handle_token_expiry
     def get_offline_tasks_by_page(self, page=1):
@@ -330,7 +329,10 @@ class OpenAPI_115:
                             'url': task['url'],
                             'status': task['status'],
                             'percentDone': task['percentDone'],
-                            'info_hash': task['info_hash']
+                            'info_hash': task['info_hash'],
+                            'file_id': task['file_id'],               # 最终目录id
+                            'wp_path_id': task['wp_path_id'],         # 下载目录id
+                            'delete_file_id': task['delete_file_id']  # 同file_id
                         })
                 time.sleep(1)  # 避免请求过快
             return task_list  
@@ -428,19 +430,29 @@ class OpenAPI_115:
             if response['code'] == 40140125:
                 return response
             return None
+        
+    @handle_token_expiry
+    def rename_by_id(self, file_id, old_name, new_name):
+        """重命名文件或目录"""
+        url = f"{self.base_url}/open/ufile/update"
+        data = {
+            "file_id": file_id,
+            "file_name": new_name
+        }
+        response = self._make_api_request('POST', url, data=data, headers=self._get_headers())
+        if response['state'] == True:
+            init.logger.info(f"文件重命名成功: [{old_name}] -> [{new_name}]")
+            return True
+        else:
+            init.logger.warn(f"文件重命名失败: {response['message']}")
+            if response['code'] == 40140125:
+                return response
+            return None
             
     @handle_token_expiry
-    def get_file_list(self, cid, file_type=None, limit=1000, show_dir=0):
+    def get_file_list(self, params):
         """获取指定目录下的所有文件"""
         url = f"{self.base_url}/open/ufile/files"
-        if file_type is None:
-            params = {"cid": cid,
-                    "limit": limit,
-                    "show_dir": show_dir}
-        else:
-            params = {"cid": cid,
-                    "type": file_type,
-                    "limit": limit}
         response = self._make_api_request('GET', url, params=params, headers=self._get_headers())
         
         if isinstance(response, dict) and response.get('code') == 0:
@@ -665,7 +677,12 @@ class OpenAPI_115:
         file_info = self.get_file_info(file_path)
         if not file_info:
             return None
-        file_list = self.get_file_list(file_info['file_id'], file_type=4)
+        params = {
+            "cid": file_info['file_id'],
+            "type": 4,
+            "limit": 1000
+        }
+        file_list = self.get_file_list(params)
         if not file_list:
             return None
         video_name = file_list[0]['fn']
@@ -700,7 +717,9 @@ class OpenAPI_115:
             line2 = escape_markdown(f"会员等级：{vip_info.get('level_name', '')}；到期时间：{expire_date}", version=2)
             line3 = escape_markdown(f"总空间：{total_space} 已用：{used_space} 剩余：{remaining_space}", version=2)
             line4 = escape_markdown(f"离线配额：{quota_info['used']}/{quota_info['count']}", version=2)   
-        return line1, line2, line3, line4
+            return line1, line2, line3, line4
+        else:
+            return "", "", "", ""
 
 
     def check_offline_download_success(self, url, offline_timeout=300):
@@ -775,7 +794,12 @@ class OpenAPI_115:
             return video_list
         
         # 文件类型；1.文档；2.图片；3.音乐；4.视频；5.压缩；6.应用；7.书籍
-        file_list = self.get_file_list(file_info['file_id'], file_type=file_type)
+        params = {
+            "cid": file_info['file_id'],
+            "type": 4,
+            "limit": 1000
+        }
+        file_list = self.get_file_list(params)
         for file in file_list:
             video_list.append(file['fn'])
         return video_list
@@ -789,7 +813,12 @@ class OpenAPI_115:
             return video_list
         
         # 文件类型；1.文档；2.图片；3.音乐；4.视频；5.压缩；6.应用；7.书籍
-        file_list = self.get_file_list(file_info['file_id'], file_type=file_type)
+        params = {
+            "cid": file_info['file_id'],
+            "type": file_type,
+            "limit": 1000
+        }
+        file_list = self.get_file_list(params)
         if not file_list:
             init.logger.warn(f"目录 {path} 中没有找到视频文件")
             return video_list
@@ -832,8 +861,12 @@ class OpenAPI_115:
         if not file_info:
             init.logger.warn(f"获取目录信息失败: {file_info}")
             return
-        
-        file_list = self.get_file_list(file_info['file_id'], show_dir=1)
+        params = {
+            "cid": file_info['file_id'],
+            "limit": 1000,
+            "show_dir": 1
+        }
+        file_list = self.get_file_list(params)
         
         # 换算字节大小
         byte_size = 0
@@ -861,7 +894,139 @@ class OpenAPI_115:
         if fid_list:
             file_ids = ",".join(fid_list)
             self.delet_file(file_ids)
+            
+            
+    def auto_clean_by_id(self, file_id):
+        # 开关关闭直接返回
+        if str(init.bot_config['clean_policy']['switch']).lower() == "off":
+            return
+        params = {
+            "cid": file_id,
+            "limit": 1000,
+            "show_dir": 1
+        }
+        file_list = self.get_file_list(params)
+        
+        # 换算字节大小
+        byte_size = 0
+        less_than = init.bot_config['clean_policy']['less_than']
+        if less_than is not None:
+            if str(less_than).upper().endswith("M"):
+                byte_size = int(less_than[:-1]) * 1024 * 1024
+            elif str(less_than).upper().endswith("K"):
+                byte_size = int(less_than[:-1]) * 1024
+            elif str(less_than).upper().endswith("G"):
+                byte_size = int(less_than[:-1]) * 1024 * 1024 * 1024
+                
+        fid_list = []
+        for file in file_list:
+            # 删除小于指定大小的文件
+            if file['fc'] == '1':
+                if file['fs'] < byte_size:
+                    fid_list.append(file['fid'])
+                    init.logger.info(f"[{file['fn']}]已添加到清理列表")
+            # 目录直接删除
+            else:
+                fid_list.append(file['fid'])
+                init.logger.info(f"[{file['fn']}]已添加到清理列表")
+        
+        if fid_list:
+            file_ids = ",".join(fid_list)
+            self.delet_file(file_ids)
+            
     
+    def auto_clean_all(self, path):
+         # 开关关闭直接返回
+        if str(init.bot_config['clean_policy']['switch']).lower() == "off":
+            return
+        
+        file_info = self.get_file_info(path)
+        if not file_info:
+            init.logger.warn(f"获取目录信息失败: {file_info}")
+            return
+
+        # 换算字节大小
+        byte_size = 0
+        less_than = init.bot_config['clean_policy']['less_than']
+        if less_than is not None:
+            if str(less_than).upper().endswith("M"):
+                byte_size = int(less_than[:-1]) * 1024 * 1024
+            elif str(less_than).upper().endswith("K"):
+                byte_size = int(less_than[:-1]) * 1024
+            elif str(less_than).upper().endswith("G"):
+                byte_size = int(less_than[:-1]) * 1024 * 1024 * 1024
+        
+        # 找到所有垃圾文件
+        junk_file_list = self.find_all_junk_files(file_info['file_id'], 0, byte_size)
+        if not junk_file_list:
+            init.logger.info(f"[{path}]下没有找到需要清理的垃圾文件！")
+            return
+                
+        fid_list = []
+        for file in junk_file_list:
+            fid_list.append(file['fid'])
+            init.logger.info(f"[{file['fn']}]已添加到清理列表")
+        
+        if fid_list:
+            file_ids = ",".join(fid_list)
+            self.delet_file(file_ids)
+
+    def find_all_junk_files(self, cid, offset, byte_size, file_list=None, limit=1150):
+        """
+        递归查找所有小于指定大小的垃圾文件
+        
+        使用分页查询和文件大小排序优化，当最后一个文件仍小于目标大小时继续递归查找，
+        否则停止查询并过滤返回小于目标大小的文件。
+        
+        Args:
+            cid: 目录ID
+            offset: 偏移量，用于分页
+            byte_size: 目标文件大小（字节），小于此大小的文件被视为垃圾文件
+            file_list: 已找到的文件列表，用于递归累积
+            limit: 每页查询的文件数量，默认1150
+            
+        Returns:
+            list: 所有小于目标大小的文件列表，包含文件的fid、fn、fs等信息
+        """
+        if file_list is None:
+            file_list = []
+            
+        params = {
+            "cid": cid,
+            "limit": limit,
+            "show_dir": 0,
+            "custom_order": 1,
+            "asc": 1,
+            "o": "file_size",
+            "offset": offset
+        }
+        
+        # 获取当前页的文件列表
+        current_files = self.get_file_list(params)
+        
+        # 如果API调用失败或没有获取到文件，说明已经到末尾或出现错误
+        if not current_files:
+            # 过滤掉大于等于目标大小的文件，只返回垃圾文件
+            junk_files = [f for f in file_list if f['fs'] < byte_size]
+            return junk_files
+            
+        # 将当前页的文件添加到结果列表
+        file_list.extend(current_files)
+        
+        # 检查最后一个文件的大小
+        last_file_size = current_files[-1]['fs']
+        
+        # 如果最后一个文件大小仍然小于目标大小，继续递归查找
+        if last_file_size < byte_size:
+            offset += limit
+            time.sleep(5)  # 避免请求过快
+            return self.find_all_junk_files(cid, offset, byte_size, file_list)
+        else:
+            # 已经找到所有小于目标大小的文件，过滤掉大于等于目标大小的文件
+            junk_files = [f for f in file_list if f['fs'] < byte_size]
+            return junk_files
+
+
     def create_dir_recursive(self, path):
         """递归创建目录"""
         res = self.get_file_info(path)
@@ -978,17 +1143,16 @@ def get_parent_paths(path):
     return result
 
 
-
-
-
 if __name__ == "__main__":
     init.init_log()
     init.load_yaml_config()
     app = OpenAPI_115()
-    app.offline_download_specify_path("magnet:?xt=urn:btih:2A93EFB4E2E8ED96B52207D9C5AA4FF2F7E8D9DF", "/test")
-    time.sleep(10)
-    dl_flg, resource_name = app.check_offline_download_success_no_waite("magnet:?xt=urn:btih:2A93EFB4E2E8ED96B52207D9C5AA4FF2F7E8D9DF")
-    print(dl_flg, resource_name)
+    app.auto_clean_all(init.bot_config.get('av_daily_update', {}).get('save_path', '/AV/日更'))
+    print("done")
+    # app.offline_download_specify_path("magnet:?xt=urn:btih:2A93EFB4E2E8ED96B52207D9C5AA4FF2F7E8D9DF", "/test")
+    # time.sleep(10)
+    # dl_flg, resource_name = app.check_offline_download_success_no_waite("magnet:?xt=urn:btih:2A93EFB4E2E8ED96B52207D9C5AA4FF2F7E8D9DF")
+    # print(dl_flg, resource_name)
     # quota_info = app.get_quota_info()
     # print(f"离线下载配额: {quota_info['used']}/{quota_info['count']}")
 

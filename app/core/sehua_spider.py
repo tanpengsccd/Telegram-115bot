@@ -12,8 +12,8 @@ from app.utils.message_queue import add_task_to_queue
 import time
 import random
 import os
-import hashlib
-import base64
+import re
+import yaml
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.parse import urlparse
@@ -380,6 +380,7 @@ def parse_topic(section_name, html, url, date):
     result['section_name'] = section_name
     result['publish_date'] = date
     result['pub_url'] = url
+    result['save_path'] = get_sehua_save_path(section_name)
     title = soup.find('span', {'id': 'thread_subject'}).text
     if title:
         result['title'] = title
@@ -672,11 +673,17 @@ def save_sehua2db(results):
     try:
         with SqlLiteLib() as sqlite:
             for result in results:
-                sql_check = "select count(*) from sehua_data where title = ? and publish_date = ?"
-                params_check = (result.get('title'), result.get('publish_date'))
+                # 检查是否满足爬取策略
+                match_strategyed, specify_path = match_strategy(result)
+                if not match_strategyed:
+                    continue
+                # 检查是否已存在（通过标题和发布日期判断）
+                sql_check = "select count(*) from sehua_data where title = ?"
+                params_check = (result.get('title'), )
                 count = sqlite.query_one(sql_check, params_check)
                 if count > 0:
                     continue  # 已存在，跳过
+                
                 # 判断数据完整性
                 if not result.get('section_name') or \
                     not result.get('av_number') or \
@@ -687,13 +694,15 @@ def save_sehua2db(results):
                     not result.get('post_url') or \
                     not result.get('publish_date') or \
                     not result.get('pub_url') or \
+                    not specify_path or \
                     not result.get('image_path'):
                     init.logger.warn(f"数据不完整，跳过入库: {result}")
                     continue
+                
                 # 插入数据
                 insert_query = '''
-                INSERT INTO sehua_data (section_name, av_number, title, movie_type, size, magnet, post_url, publish_date, pub_url, image_path)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO sehua_data (section_name, av_number, title, movie_type, size, magnet, post_url, publish_date, pub_url, image_path, save_path)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 '''
                 params_insert = (
                         result.get('section_name'),
@@ -705,7 +714,8 @@ def save_sehua2db(results):
                         result.get('post_url'),
                         result.get('publish_date'),
                         result.get('pub_url'),
-                        result.get('image_path')
+                        result.get('image_path'),
+                        specify_path
                     )
                 sqlite.execute_sql(insert_query, params_insert)
                 insert_count += 1
@@ -713,8 +723,72 @@ def save_sehua2db(results):
             init.logger.info(f"涩花[{results[0].get('section_name')}]版块，[{results[0].get('publish_date')}]日，[{insert_count}]条数据入库成功!")
     except Exception as e:
         init.logger.error(f"保存涩花数据到数据库时出错: {str(e)}")
-
+        
+        
+def match_strategy(result):
+    yaml_path = init.STRATEGY_FILE
+    strategy_config = None
+    # 获取yaml文件名称
+    try:
+        # 获取yaml文件路径
+        if os.path.exists(yaml_path):
+            with open(yaml_path, 'r', encoding='utf-8') as f:
+                cfg = f.read()
+                f.close()
+            strategy_config = yaml.load(cfg, Loader=yaml.FullLoader)
+        else:
+           return True, result.get('save_path')
+    except Exception as e:
+        init.logger.warn(f"配置文件[{yaml_path}]格式有误，请检查!")
+        return True, result.get('save_path')
     
+    if strategy_config:
+        title_regular = strategy_config.get('title_regular', [])
+        if not title_regular:
+            return True, result.get('save_path')
+        
+        current_section = result.get('section_name', '')
+        section_has_rules = False
+        
+        # 检查当前section是否有配置规则
+        for item in title_regular:
+            if item.get('section_name', '') == current_section:
+                section_has_rules = True
+                break
+        
+        # 如果当前section没有配置规则，默认全部通过
+        if not section_has_rules:
+            return True, result.get('save_path')
+        
+        # 有配置规则的section，需要匹配正则
+        for item in title_regular:
+            if item.get('section_name', '') == current_section:
+                pattern = item.get('pattern', '')
+                if not pattern:
+                    continue
+                if re.search(pattern, result.get('title', ''), re.IGNORECASE):
+                    strategy_name = item.get('strategy_name', item.get('name', '未知策略'))
+                    init.logger.info(f"标题[{result.get('title', '')}]匹配正则[{strategy_name}]成功!")
+                    # 正确处理空值：如果specify_save_path为空值，使用默认路径
+                    specify_path = item.get('specify_save_path') or result.get('save_path')
+                    return True, specify_path
+        
+        # 有配置规则但都不匹配，放弃入库
+        init.logger.info(f"标题[{result.get('title', '')}]未匹配到[{current_section}]板块的任何规则，自动放弃入库!")
+        return False, ""
+        
+    # 空的配置等同于无效策略，默认全部通过
+    return True, result.get('save_path')
+
+
+def get_sehua_save_path(_section_name):
+    sections = init.bot_config.get('sehua_spider', {}).get('sections', [])
+    for section in sections:
+        section_name = section.get('name', '')
+        if section_name == _section_name:
+            return section.get('save_path', f'/AV/涩花/{section_name}')
+    return f'/AV/涩花/{_section_name}'
+
 
 
 if __name__ == "__main__":

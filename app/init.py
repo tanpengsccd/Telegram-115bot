@@ -28,7 +28,8 @@ from app.utils.logger import Logger
 from app.utils.sqlitelib import *
 
 
-
+# 调试模式
+debug_mode = False
 
 # 全局日志
 logger:Optional[Logger] = None
@@ -36,44 +37,44 @@ logger:Optional[Logger] = None
 # 全局配置
 bot_config = dict()
 
-# 115客户端对象
-# client_115 = None
-
 # 115开放API对象
 openapi_115 = None
 
 # Tg 用户客户端
 tg_user_client: Optional[TelegramClient] = None
 
-# yaml配置文件目录
+
+# yaml配置文件
 CONFIG_FILE = "/config/config.yaml"
-
-# APP path
-APP = "/app"
-
+# 抓取策略文件
+STRATEGY_FILE = "/config/crawling_strategy.yaml"
 # SessionFile
 TG_SESSION_FILE = "/config/user_session.session"
-
 # DB File
 DB_FILE = "/config/db.db"
-
-TEMP = "/tmp"
-
 # 115 Token File
 TOKEN_FILE = "/config/115_tokens.json"
-
+# APP path
+APP = "/app"
+# Config path
+CONFIG = "/config"
+# Temp path
+TEMP = "/tmp"
 IMAGE_PATH = "/app/images"
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
 # 调试用
-# CONFIG_FILE = "config/config.yaml"
-# APP = "app"
-# TG_SESSION_FILE = "config/user_session.session"
-# DB_FILE = "config/db.db"
-# TOKEN_FILE = "config/115_tokens.json"
-# IMAGE_PATH = "app/images"
-# TEMP = "tmp"
+if debug_mode:
+    CONFIG_FILE = "config/config.yaml"
+    STRATEGY_FILE = "config/crawling_strategy.yaml"
+    TG_SESSION_FILE = "config/user_session.session"
+    DB_FILE = "config/db.db"
+    TOKEN_FILE = "config/115_tokens.json"
+    APP = "app"
+    CONFIG = "config"
+    TEMP = "tmp"
+    IMAGE_PATH = "app/images"
 
 
 def create_logger():
@@ -95,7 +96,7 @@ def create_logger():
     log_level = bot_config.get('log_level', 'info').lower()
     log_level = LOG_LEVEL_MAP.get(log_level, logging.INFO)
     # 全局日志实例，输出到命令行和文件
-    logger = Logger(level=log_level)
+    logger = Logger(level=log_level, debug_model=debug_mode)
     logger.info("Logger init success!")
 
 
@@ -339,6 +340,7 @@ def init_db():
             publish_date DATETIME, -- 发布时间
             pub_url TEXT, -- 资源链接
             image_path TEXT, -- 图片本地路径 
+            save_path TEXT, -- 保存路径
             is_download TINYINT DEFAULT 0, -- 是否下载, 0或1, 默认0
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP -- 创建时间，默认当前时间
         );

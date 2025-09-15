@@ -24,7 +24,7 @@ from app.handlers.offline_task_handler import register_offline_task_handlers
 
 
 def get_version(md_format=False):
-    version = "v3.1.0"
+    version = "v3.2.1"
     if md_format:
         return escape_markdown(version, version=2)
     return version
@@ -97,6 +97,8 @@ def send_start_message():
         return
     
     line1, line2, line3, line4 = init.openapi_115.welcome_message()
+    if not line1:
+        return
     line5 = escape_markdown(f"Telegram-115Bot {version} 启动成功！", version=2)
     if line1 and line2 and line3 and line4:
         formatted_message = f"""

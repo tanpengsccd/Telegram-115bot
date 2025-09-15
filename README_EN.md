@@ -12,6 +12,11 @@ Usage Issues & Bug Reports
 [Join](https://t.me/+FTPNla_7SCc3ZWVl)
 
 ## Update Log
+v3.2.1
+- Added crawling filter rule configuration, allowing precise scraping through title keyword regex. Matched resources can also be assigned to specific save directories for easy categorization. For rule configuration details, please refer to the instructions in "/config/crawling_strategy.yaml".
+- Optimized request strategies, significantly reducing API request frequency.
+- Code improvements and bug fixes.
+
 v3.2.0
 - Added SeHua spider, crawl sehua data you specify and offline download them to 115 every midnight.
 - Updated interaction experience. Command "/dl", "/av" update to async model, offline download to 115 will not block. Both of the max download queue is 5.

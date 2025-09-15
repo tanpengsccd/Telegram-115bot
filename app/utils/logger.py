@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
 
 import logging
+import os
 
 
 class Logger:
-    def __init__(self, level=logging.INFO):
+    def __init__(self, level=logging.INFO, debug_model=False):
         """
         日志类构造函数
         :param level: 日志级别
@@ -19,11 +20,13 @@ class Logger:
         ch.setLevel(level)
         self.logger.addHandler(ch)
         
-        # 日志文件输出
-        fs = logging.FileHandler("/config/115bot.log", encoding="utf-8", mode='w')
-        fs.setLevel(level)
-        fs.setFormatter(fmt)
-        self.logger.addHandler(fs)
+        if not debug_model:
+            from app.init import CONFIG
+            # 日志文件输出
+            fs = logging.FileHandler(os.path.join(CONFIG, "115bot.log"), encoding="utf-8", mode='w')
+            fs.setLevel(level)
+            fs.setFormatter(fmt)
+            self.logger.addHandler(fs)
 
     def debug(self, message):
         """
