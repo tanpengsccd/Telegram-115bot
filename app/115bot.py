@@ -24,7 +24,7 @@ from app.handlers.offline_task_handler import register_offline_task_handlers
 
 
 def get_version(md_format=False):
-    version = "v3.2.1"
+    version = "v3.2.2"
     if md_format:
         return escape_markdown(version, version=2)
     return version

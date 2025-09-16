@@ -33,8 +33,8 @@ def sehua_offline():
             offline_groups = create_offline_group_by_save_path(results)
             if offline_groups:
                 for save_path, batches in offline_groups.items():
-                    if os.path.dirname(save_path) not in save_path_list:
-                        save_path_list.append(os.path.dirname(save_path))
+                    if save_path not in save_path_list:
+                        save_path_list.append(save_path)
                     for batch_tasks in batches:
                         task_count = len(batch_tasks.split('\n')) 
                         offline2115(batch_tasks, task_count, save_path)
