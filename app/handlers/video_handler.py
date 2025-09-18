@@ -187,6 +187,7 @@ def register_video_handlers(application):
         fallbacks=[CommandHandler("q", quit_conversation)],
     )
     application.add_handler(video_handler)
+    init.logger.info("✅ Video处理器已注册")
     
 
 

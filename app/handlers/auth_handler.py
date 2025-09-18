@@ -50,3 +50,4 @@ def register_auth_handlers(application):
         fallbacks=[CommandHandler("q", quit_conversation)],
     )
     application.add_handler(auth_handler)
+    init.logger.info("✅ Auth处理器已注册")

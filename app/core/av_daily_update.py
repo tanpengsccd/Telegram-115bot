@@ -48,6 +48,20 @@ def get_today_av():
     
     # 抓取磁力
     return crawl_javbee(url, response.text, date)
+
+
+def get_av_by_date(date):
+    url = f"https://javbee.vip/date/{date}"
+    response = requests.get(url, verify=False)
+    if response.status_code == 500:
+        init.logger.warn(f"服务器响应错误，可能是[{date}]尚未更新。")
+        return None
+    if response.status_code != 200:
+        init.logger.warn(f"获取[{date}]日更信息错误，HTTP Code: {response.status_code}")
+        return None
+    
+    # 抓取磁力
+    return crawl_javbee(url, response.text, date)
        
     
     
@@ -185,6 +199,20 @@ def av_daily_update():
         av_daily_offline()
     else:
         init.logger.info("没有找到最新的AV更新。")  
+        
+        
+def crawl_javbee_by_date(date):
+    init.logger.info(f"开始获取{date}的AV更新...")
+    results = get_av_by_date(date)
+    if results:
+        # 保存到数据库
+        save_av_daily_update2db(results)
+        init.logger.info(f"{date}日AV数据保存成功。")
+        # 离线到115
+        av_daily_offline()
+    else:
+        init.logger.info(f"{date}没有找到AV更新。")  
+    init.CRAWL_JAV_STATUS = 0
     
     
 def repair_leak():

@@ -313,3 +313,4 @@ def register_subscribe_movie_handlers(application):
         fallbacks=[CommandHandler("q", quit_conversation)],
     )
     application.add_handler(sub_movie_handler)
+    init.logger.info("✅ Subscribe Movie处理器已注册")

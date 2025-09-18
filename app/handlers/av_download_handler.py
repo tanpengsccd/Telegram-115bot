@@ -227,3 +227,4 @@ def register_av_download_handlers(application):
         fallbacks=[CommandHandler("q", quit_conversation)],
     )
     application.add_handler(download_handler)
+    init.logger.info("✅ AV Downloader处理器已注册")

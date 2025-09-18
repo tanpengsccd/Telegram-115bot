@@ -84,3 +84,4 @@ async def push2aria2(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def register_aria2_handlers(application):
     aria2_handler = CallbackQueryHandler(push2aria2, pattern=r"^push2aria2_.+")
     application.add_handler(aria2_handler)
+    init.logger.info("✅ Aria2处理器已注册")

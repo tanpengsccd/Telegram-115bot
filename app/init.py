@@ -47,6 +47,10 @@ tg_user_client: Optional[TelegramClient] = None
 # aria2 客户端
 aria2_client = None
 
+# 爬取状态
+CRAWL_SEHUA_STATUS = 0  # 涩花爬取状态
+CRAWL_JAV_STATUS = 0    # javbee爬取状态
+
 
 # yaml配置文件
 CONFIG_FILE = "/config/config.yaml"

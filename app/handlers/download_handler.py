@@ -551,3 +551,4 @@ def register_download_handlers(application):
         filters.TEXT & ~filters.COMMAND, 
         handle_manual_rename
     ), group=1)
+    init.logger.info("✅ Downloader处理器已注册")

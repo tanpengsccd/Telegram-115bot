@@ -22,10 +22,11 @@ from app.handlers.subscribe_movie_handler import register_subscribe_movie_handle
 from app.handlers.av_download_handler import register_av_download_handlers
 from app.handlers.offline_task_handler import register_offline_task_handlers
 from app.handlers.aria2_handler import register_aria2_handlers
+from app.handlers.crawl_handler import register_crawl_handlers
 
 
 def get_version(md_format=False):
-    version = "v3.2.4"
+    version = "v3.2.5"
     if md_format:
         return escape_markdown(version, version=2)
     return version
@@ -36,11 +37,13 @@ def get_help_info():
 <b>🍿 Telegram-115Bot {version} 使用手册</b>\n\n
 <b>🔧 命令列表</b>\n
 <code>/start</code> - 显示帮助信息\n
-<code>/auth</code> - <i>115扫码授权 (首次使用必选)</i>\n
+<code>/auth</code> - <i>115扫码授权 (解除授权后使用)</i>\n
 <code>/reload</code> - <i>重载配置</i>\n
 <code>/dl</code> - 添加离线下载 [磁力|ed2k|https]\n
 <code>/rl</code> - 查看重试列表\n
 <code>/av</code> - <i>下载番号资源 (自动匹配磁力)</i>\n
+<code>/csh</code> - <i>手动爬取涩花数据</i>\n
+<code>/cjav</code> - <i>手动爬取javbee数据</i>\n
 <code>/sm</code> - 订阅电影\n
 <code>/sync</code> - 同步目录并创建软链\n
 <code>/q</code> - 取消当前会话\n\n
@@ -53,6 +56,16 @@ def get_help_info():
 <u>重试列表：</u>\n
 • 输入 <code>"/rl"</code>
 • 查看当前重试列表，可根据需要选择是否清空\n\n
+<u>AV资源：</u>\n
+• 输入 <code>"/av 番号"</code>
+• 自动检索磁力并离线,默认不生成软链（建议使用削刮工具生成软链）\n\n
+<u>手动爬取涩花：</u>\n
+• 输入 <code>"/csh"</code>
+• 基于版块配置，爬取涩花当天数据！\n\n
+<u>手动爬取javbee：</u>\n
+• 输入 <code>"/cjav yyyymmdd"</code>
+• 日期格式为 <code>yyyymmdd</code>，例如：20250808\n
+• 留空则默认爬取当天数据\n\n
 <u>AV资源：</u>\n
 • 输入 <code>"/av 番号"</code>
 • 自动检索磁力并离线,默认不生成软链（建议使用削刮工具生成软链）\n\n
@@ -135,6 +148,8 @@ def get_bot_menu():
         BotCommand("dl", "添加离线下载"),
         BotCommand("rl", "查看重试列表"),
         BotCommand("av", "指定番号下载"),
+        BotCommand("csh", "手动爬取涩花数据"),
+        BotCommand("cjav", "手动爬取javbee数据"),
         BotCommand("sm", "订阅电影"),
         BotCommand("sync", "同步指定目录，并创建软链"),
         BotCommand("q", "退出当前会话")]
@@ -201,12 +216,12 @@ if __name__ == '__main__':
     register_offline_task_handlers(application)
     # 注册Aria2
     register_aria2_handlers(application)
+    # 手动爬虫
+    register_crawl_handlers(application)
     # 注册同步
     register_sync_handlers(application)
     # 注册视频
     register_video_handlers(application)
-
-
 
     # 启动机器人轮询
     try:

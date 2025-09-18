@@ -136,3 +136,4 @@ def register_sync_handlers(application):
         per_chat=True
     )
     application.add_handler(sync_handler)
+    init.logger.info("✅ Sync处理器已注册")

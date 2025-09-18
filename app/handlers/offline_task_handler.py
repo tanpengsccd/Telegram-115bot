@@ -188,3 +188,4 @@ def register_offline_task_handlers(application):
     
     # 添加独立的清空重试列表处理器
     application.add_handler(CallbackQueryHandler(handle_clear_retry_list, pattern="^(clear_all|return)$"))
+    init.logger.info("✅ Offline Task处理器已注册")

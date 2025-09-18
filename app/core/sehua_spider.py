@@ -281,6 +281,33 @@ def sehua_spider_start():
     finally:
         # 关闭全局浏览器
         close_browser()
+        
+        
+def sehua_spider_by_date(date):
+    """完整的爬虫启动函数，包含浏览器生命周期管理"""
+    # 初始化全局浏览器
+    if not init_browser():
+        return
+    try:
+        sections = init.bot_config['sehua_spider'].get('sections', [])
+        for section in sections:
+            section_name = section.get('name')
+            init.logger.info(f"开始爬取 {section_name} 分区...")
+            section_spider(section_name, date)
+            init.logger.info(f"{section_name} 分区爬取完成")
+            delay = random.uniform(30, 60)
+            time.sleep(delay)
+        # 离线到115
+        init.logger.info("开始执行涩花离线任务...")
+        sehua_offline()
+    except Exception as e:
+        init.logger.warn(f"爬取 {section_name} 分区时发生错误: {str(e)}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        # 关闭全局浏览器
+        close_browser()
+        init.CRAWL_SEHUA_STATUS = 0
     
     
 def section_spider(section_name, date):
