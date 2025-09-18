@@ -208,7 +208,7 @@ def add_subscribe_movie(movie_name, tmdb_id, sub_user, category_folder):
     # 判断是否下载过
     if is_download is not None:
         if int(is_download) == 1:
-            message = f"[{movie_name}]已下载，请勿重复添加."
+            message = f"[{movie_name}]订阅已下载，请勿重复添加."
             init.logger.info(message)
             return False, message
     save_path = get_category_folder(tmdb_id)
@@ -241,13 +241,10 @@ def add_subscribe_movie(movie_name, tmdb_id, sub_user, category_folder):
 
 def get_is_delete_or_download(tmdb_id):
     with SqlLiteLib() as sqlite:
-        sql = "select movie_name from sub_movie where tmdb_id=?"
+        sql = "select is_delete, is_download from sub_movie where tmdb_id=?"
         params = (tmdb_id,)
-        movie_name = sqlite.query_one(sql, params)
-        if movie_name:
-            sql = "select is_delete, is_download from sub_movie where tmdb_id=?"
-            params = (tmdb_id,)
-            is_delete, is_download = sqlite.query_row(sql, params)
+        is_delete, is_download = sqlite.query_row(sql, params)
+        if is_delete is not None and is_download is not None:
             return is_delete, is_download
         else:
             return None, None      
@@ -261,7 +258,7 @@ def get_category_folder(tmdb_id):
     
 def check_tmdb_id(tmdb_id):
     with SqlLiteLib() as sqlite:
-        sql = f"select movie_name from sub_movie where tmdb_id=?"
+        sql = f"select movie_name from sub_movie where is_delete=0 and tmdb_id=?"
         params = (tmdb_id,)
         result = sqlite.query_one(sql, params)
         if result:
@@ -271,7 +268,7 @@ def check_tmdb_id(tmdb_id):
         
 def update_sub_movie_category_folder(tmdb_id, category_folder):
     with SqlLiteLib() as sqlite:
-        sql = f"update sub_movie set category_folder=? where tmdb_id=?"
+        sql = f"update sub_movie set category_folder=? where is_delete=0 and tmdb_id=?"
         params = (category_folder, tmdb_id)
         sqlite.execute_sql(sql, params)
 

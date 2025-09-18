@@ -75,7 +75,7 @@ def schedule_movie():
     with SqlLiteLib() as sqlite:
         try:
             # 查询需要处理的数据
-            query = "SELECT tmdb_id, movie_name, category_folder FROM sub_movie WHERE is_download = 0"
+            query = "SELECT tmdb_id, movie_name, category_folder FROM sub_movie WHERE is_download = 0 and is_delete = 0"
             rows = sqlite.query(query)
             for row in rows:
                 tmdb_id, movie_name, category_folder = row
@@ -85,7 +85,7 @@ def schedule_movie():
                     # 添加到离线下载
                     if download_from_link(download_url, movie_name, category_folder):
                         # 更新下载状态
-                        update_download_sql = "UPDATE sub_movie SET is_download = 1 WHERE tmdb_id = ?"
+                        update_download_sql = "UPDATE sub_movie SET is_download = 1 WHERE is_delete = 0 and tmdb_id = ? "
                         sqlite.execute_sql(update_download_sql, (tmdb_id,))
                         # 发送消息给用户
                         send_message2usr(tmdb_id, sqlite)
@@ -119,14 +119,14 @@ def update_sub_movie(tmdb_id, highest_score_item):
     movie_name = get_moive_name(tmdb_id)
     post_url = get_movie_cover(movie_name)
     with SqlLiteLib() as sqlite:
-        sql = "update sub_movie set download_url=?, post_url=?, size=? where tmdb_id=?"
+        sql = "update sub_movie set download_url=?, post_url=?, size=? where is_delete = 0 and tmdb_id=?"
         params = (highest_score_item['download_url'], post_url, highest_score_item['size'], tmdb_id)
         sqlite.execute_sql(sql, params)
         
         
 def get_moive_name(tmdb_id):
     with SqlLiteLib() as sqlite:
-        sql = "select movie_name from sub_movie where tmdb_id=?"
+        sql = "select movie_name from sub_movie where is_delete = 0 and tmdb_id=?"
         params = (tmdb_id,)
         result = sqlite.query_one(sql, params)
         if result:
@@ -240,7 +240,7 @@ def download_from_link(download_url, movie_name, save_path):
     
 def send_message2usr(tmdb_id, sqlite):
     try:
-        query = "select sub_user,download_url,size,movie_name,post_url,category_folder from sub_movie where tmdb_id=?"
+        query = "select sub_user,download_url,size,movie_name,post_url,category_folder from sub_movie where is_delete = 0 and tmdb_id=?"
         params = (tmdb_id,)
         row = sqlite.query_row(query, params)
         if not row:
@@ -267,7 +267,7 @@ def send_message2usr(tmdb_id, sqlite):
 def is_subscribe(movie_name):
     tmdb_id = get_tmdb_id(movie_name)
     with SqlLiteLib() as sqlite:
-        sql = "select movie_name from sub_movie where tmdb_id=?"
+        sql = "select movie_name from sub_movie where is_delete = 0 and tmdb_id=?"
         params = (tmdb_id,)
         result = sqlite.query_one(sql, params)
         if result:
@@ -279,12 +279,12 @@ def update_subscribe(movie_name, post_url, download_url):
     tmdb_id = get_tmdb_id(movie_name)
     if tmdb_id:
         with SqlLiteLib() as sqlite:
-            select_sql = "SELECT is_download FROM sub_movie WHERE tmdb_id = ?"
+            select_sql = "SELECT is_download FROM sub_movie WHERE is_delete = 0 and tmdb_id = ?"
             is_download = sqlite.query_one(select_sql, (tmdb_id,))
             if is_download == 1:
                 init.logger.info(f"订阅影片[{movie_name}]已完成下载，无需再次更新!")
                 return
-            update_download_sql = "UPDATE sub_movie SET is_download = 1, post_url = ?, download_url = ? WHERE tmdb_id = ?"
+            update_download_sql = "UPDATE sub_movie SET is_download = 1, post_url = ?, download_url = ? WHERE is_delete = 0 and tmdb_id = ?"
             sqlite.execute_sql(update_download_sql, (post_url, download_url, tmdb_id,))
             init.logger.info(f"订阅影片[{movie_name}]已手动完成下载!")
             
