@@ -168,7 +168,10 @@ def download_task(av_result, av_number, save_path, user_id):
 **保存目录:** `{save_path}/{av_number.upper()}`
                 """           
                 from app.utils.message_queue import add_task_to_queue
-                add_task_to_queue(user_id, cover_image, message)
+                if not init.aria2_client:
+                    add_task_to_queue(user_id, cover_image, message)
+                else:
+                    push2aria2(f"{save_path}/{av_number.upper()}", user_id, cover_image, message)
                 return  # 成功后直接返回
             else:
                 # 删除失败的离线任务
@@ -187,6 +190,30 @@ def download_task(av_result, av_number, save_path, user_id):
     finally:
         # 清空离线任务
         init.openapi_115.clear_cloud_task()
+        
+def push2aria2(save_path, user_id, cover_image, message):
+    # 为Aria2推送创建任务ID系统
+    import uuid
+    push_task_id = str(uuid.uuid4())[:8]
+    
+    # 初始化pending_push_tasks（如果不存在）
+    if not hasattr(init, 'pending_push_tasks'):
+        init.pending_push_tasks = {}
+    
+    # 存储推送任务数据
+    init.pending_push_tasks[push_task_id] = {
+        'path': save_path
+    }
+    
+    device_name = init.bot_config.get('aria2', {}).get('device_name', 'Aria2') or 'Aria2'
+    
+    keyboard = [
+        [InlineKeyboardButton(f"推送到{device_name}", callback_data=f"push2aria2_{push_task_id}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    from app.utils.message_queue import add_task_to_queue
+    add_task_to_queue(user_id, cover_image, message, reply_markup)
+    
 
 
 def register_av_download_handlers(application):

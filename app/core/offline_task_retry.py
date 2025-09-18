@@ -5,6 +5,7 @@ import os
 from app.utils.sqlitelib import *
 from app.utils.message_queue import add_task_to_queue
 from telegram.helpers import escape_markdown
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 
 def offline_task_retry():
@@ -151,11 +152,6 @@ def sehua_success_proccesser(item, save_path, task, success_list):
     pub_url = item['pub_url']
     image_path = item['image_path']
 
-    # 处理文件重命名和清理
-    # if section_name != '国产原创' and av_number != task['name']:
-    #     old_name = f"{save_path}/{task['name']}"
-    #     init.openapi_115.rename_by_id(task['file_id'], old_name, av_number)
-
     # 更新数据库状态
     with SqlLiteLib() as sqlite:
         sql_update = "UPDATE sehua_data SET is_download=1 WHERE id=?"
@@ -207,7 +203,10 @@ def sehua_success_proccesser(item, save_path, task, success_list):
 **下载链接:** `{magnet}`
 **发布链接:** [点击查看详情]({pub_url})
                 """
-            add_task_to_queue(init.bot_config['allowed_user'], image_path, message)
+            if not init.aria2_client:
+                add_task_to_queue(init.bot_config['allowed_user'], image_path, message)
+            else:
+                push2aria2(f"{save_path}/{task['name']}", init.bot_config['allowed_user'], image_path, message)
             time.sleep(10)  # 避免发送过快
             
 
@@ -278,12 +277,6 @@ def av_daily_offline():
 def av_daily_success_proccesser(item, task):
     save_path = init.bot_config.get('av_daily_update', {}).get('save_path', '/AV/日更')
     
-    # 如果资源名与番号不一致，重命名
-    # if item['av_number'].upper() != task['name'].upper():
-    #     old_name = f"{save_path}/{task['name']}"
-    #     new_name = item['av_number'].upper()
-    #     init.openapi_115.rename_by_id(task['file_id'], old_name, new_name)
-    
     # 更新数据库状态
     with SqlLiteLib() as sqlite:
         sql_update = "UPDATE av_daily_update SET is_download=1 WHERE id=?"
@@ -307,8 +300,11 @@ def av_daily_success_proccesser(item, task):
 **发布日期:** {msg_date}
 **下载链接:** `{msg_magnet}`
 **发布链接:** [点击查看详情]({pub_url})
-"""
-        add_task_to_queue(init.bot_config['allowed_user'], item['post_url'], message)
+"""     
+        if not init.aria2_client:
+            add_task_to_queue(init.bot_config['allowed_user'], item['post_url'], message)
+        else:
+            push2aria2(f"{save_path}/{task['name']}", init.bot_config['allowed_user'], item['post_url'], message)
         time.sleep(10)  # 避免发送过快
 
 
@@ -395,6 +391,29 @@ def create_offline_group_by_save_path(res_list):
         result[save_path] = batches
     
     return result
+
+def push2aria2(save_path, user_id, cover_image, message):
+    # 为Aria2推送创建任务ID系统
+    import uuid
+    push_task_id = str(uuid.uuid4())[:8]
+    
+    # 初始化pending_push_tasks（如果不存在）
+    if not hasattr(init, 'pending_push_tasks'):
+        init.pending_push_tasks = {}
+    
+    # 存储推送任务数据
+    init.pending_push_tasks[push_task_id] = {
+        'path': save_path
+    }
+    
+    device_name = init.bot_config.get('aria2', {}).get('device_name', 'Aria2') or 'Aria2'
+    
+    keyboard = [
+        [InlineKeyboardButton(f"推送到{device_name}", callback_data=f"push2aria2_{push_task_id}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    from app.utils.message_queue import add_task_to_queue
+    add_task_to_queue(user_id, cover_image, message, reply_markup)
 
 
 if __name__ == '__main__':

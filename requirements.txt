@@ -10,3 +10,4 @@ Telethon==1.40.0
 urllib3==2.5.0
 Pillow==11.2.1
 bs4==0.0.2
+aria2p==0.12.1

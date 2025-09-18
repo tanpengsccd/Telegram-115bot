@@ -21,10 +21,11 @@ from app.core.scheduler import start_scheduler_in_thread
 from app.handlers.subscribe_movie_handler import register_subscribe_movie_handlers
 from app.handlers.av_download_handler import register_av_download_handlers
 from app.handlers.offline_task_handler import register_offline_task_handlers
+from app.handlers.aria2_handler import register_aria2_handlers
 
 
 def get_version(md_format=False):
-    version = "v3.2.2"
+    version = "v3.2.3"
     if md_format:
         return escape_markdown(version, version=2)
     return version
@@ -198,6 +199,8 @@ if __name__ == '__main__':
     register_av_download_handlers(application)
     # 注册离线任务
     register_offline_task_handlers(application)
+    # 注册Aria2
+    register_aria2_handlers(application)
     # 注册同步
     register_sync_handlers(application)
     # 注册视频

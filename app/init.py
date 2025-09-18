@@ -7,6 +7,7 @@ import shutil
 from typing import Optional
 from telethon import TelegramClient
 
+
 # 模块路径现在通过 Dockerfile 中的 PYTHONPATH 环境变量设置
 # 为了兼容本地开发，添加后备路径设置
 def _ensure_module_paths():
@@ -43,6 +44,9 @@ openapi_115 = None
 # Tg 用户客户端
 tg_user_client: Optional[TelegramClient] = None
 
+# aria2 客户端
+aria2_client = None
+
 
 # yaml配置文件
 CONFIG_FILE = "/config/config.yaml"
@@ -62,7 +66,7 @@ CONFIG = "/config"
 TEMP = "/tmp"
 IMAGE_PATH = "/app/images"
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
 
 # 调试用
 if debug_mode:
@@ -260,6 +264,23 @@ def create_tg_session_file():
     
     return True
 
+def init_aria2():
+    from app.utils.aria2 import create_aria2_client
+    global bot_config, aria2_client
+    if not bot_config.get('aria2', {}).get('enable', False):
+        logger.info("Aria2功能未启用，跳过Aria2客户端初始化。")
+        aria2_client = None
+        return
+    aria2_client = create_aria2_client(
+        host=bot_config.get('aria2').get('host', ''),
+        port=bot_config.get('aria2').get('port', ''),
+        secret=bot_config.get('aria2').get('rpc_secret', '')
+    )
+    if aria2_client:
+        logger.info("Aria2客户端初始化完毕！")
+    else:
+        aria2_client = None
+
 def init_db():
     with SqlLiteLib() as sqlite:
         # 创建表（如果不存在）
@@ -364,7 +385,7 @@ def init():
     create_tmp()
     init_db()
     initialize_tg_usr_client()
-
+    init_aria2()
 
 if __name__ == "__main__":
     load_yaml_config()

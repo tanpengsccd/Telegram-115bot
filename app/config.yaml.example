@@ -127,5 +127,20 @@ sub_condition:
   resolution_priority:
     - 2106
     - 1080
-  
+##########################################Aria2#######################################
+# 设置Aria2可选择将离线的影片推送到Aria2
+# 默认关闭
+aria2:
+  # 是否启用
+  enable: false
+  # 指定设备名称, 例如“我的群晖”，“我的飞牛”
+  device_name: 我的飞牛
+  # Arai2地址 http(s)://your_aria2_host
+  host: http://your_aria2_host
+  # Aria2 RPC端口
+  port: 6800
+  # Aria2 密钥
+  rpc_secret: your_aria2_rpc_secret
+  # 下载目录 (Aari2容器中的下载位置)
+  dowload_path: "/Downloads"
 

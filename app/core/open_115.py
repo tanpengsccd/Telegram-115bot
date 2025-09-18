@@ -203,7 +203,8 @@ class OpenAPI_115:
 
     def _get_headers(self):
         return {
-            "Authorization": f"Bearer {self.access_token}"
+            "Authorization": f"Bearer {self.access_token}",
+            "User-Agent": init.USER_AGENT
         }
 
     def _make_api_request(self, method: str, url: str, params=None, data=None, headers=None):
@@ -701,6 +702,38 @@ class OpenAPI_115:
             if response['code'] == 40140125:
                 return response
         return None
+    
+    @handle_token_expiry
+    def get_file_download_url(self, file_path):
+        """获取文件下载链接"""
+        file_info = self.get_file_info(file_path)
+        file_id = file_info['file_id']
+        videos = self.get_file_list({
+            "cid": file_id,
+            "type": 4,
+            "limit": 1,
+            "asc": 0,
+            "o": "file_size",
+            "custom_order": 1
+        })
+        url = f"{self.base_url}/open/ufile/downurl"
+        download_urls = []
+        for i in range(len(videos)):
+            data = {  
+                "pick_code": videos[0]['pc']
+            }
+            response = self._make_api_request('POST', url, data=data, headers=self._get_headers())
+            if response['state'] == True:
+                init.logger.info(f"获取文件下载链接成功: {response}")
+                download_urls.append(response['data'][videos[i]['fid']]['url']['url'])
+                time.sleep(3)  # 避免请求过快
+            else:
+                init.logger.warn(f"获取文件下载链接失败: {response}")
+                if response['code'] == 40140125:
+                    return response
+        return download_urls
+        
+        
 
     def welcome_message(self):
         """欢迎消息"""
@@ -1147,8 +1180,8 @@ if __name__ == "__main__":
     init.init_log()
     init.load_yaml_config()
     app = OpenAPI_115()
-    app.auto_clean_all(init.bot_config.get('av_daily_update', {}).get('save_path', '/AV/日更'))
-    print("done")
+    download_url = app.get_file_download_url(3247655187050517071)
+    print(download_url)
     # app.offline_download_specify_path("magnet:?xt=urn:btih:2A93EFB4E2E8ED96B52207D9C5AA4FF2F7E8D9DF", "/test")
     # time.sleep(10)
     # dl_flg, resource_name = app.check_offline_download_success_no_waite("magnet:?xt=urn:btih:2A93EFB4E2E8ED96B52207D9C5AA4FF2F7E8D9DF")
