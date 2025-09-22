@@ -38,21 +38,6 @@ async def start_d_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not init.check_user(usr_id):
         await update.message.reply_text("⚠️ 对不起，您无权使用115机器人！")
         return ConversationHandler.END
-
-    # if context.args:
-    #     magnet_link = " ".join(context.args)
-    #     context.user_data["link"] = magnet_link  # 将用户参数存储起来
-    #     init.logger.info(f"download link: {magnet_link}")
-    #     dl_url_type = is_valid_link(magnet_link)
-    #     # 检查链接格式是否正确
-    #     if dl_url_type == DownloadUrlType.UNKNOWN:
-    #         await update.message.reply_text("⚠️ 下载链接格式错误，请修改后重试！")
-    #         return ConversationHandler.END
-    #     # 保存下载类型到context.user_data
-    #     context.user_data["dl_url_type"] = dl_url_type
-    # else:
-    #     await update.message.reply_text("⚠️ 请在'/dl '命令后输入合法的下载链接！")
-    #     return ConversationHandler.END
     magnet_link = update.message.text.strip()
     context.user_data["link"] = magnet_link  # 将用户参数存储起来
     init.logger.info(f"download link: {magnet_link}")
