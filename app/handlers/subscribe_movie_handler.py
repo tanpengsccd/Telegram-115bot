@@ -243,8 +243,9 @@ def get_is_delete_or_download(tmdb_id):
     with SqlLiteLib() as sqlite:
         sql = "select is_delete, is_download from sub_movie where tmdb_id=?"
         params = (tmdb_id,)
-        is_delete, is_download = sqlite.query_row(sql, params)
-        if is_delete is not None and is_download is not None:
+        result = sqlite.query_row(sql, params)
+        if result is not None:
+            is_delete, is_download = result
             return is_delete, is_download
         else:
             return None, None      
@@ -304,9 +305,11 @@ def register_subscribe_movie_handlers(application):
         entry_points=[CommandHandler("sm", subscribe_moive)],
         states={
             SUBSCRIBE_OPERATE: [CallbackQueryHandler(subscribe_operate)],
-            ADD_SUBSCRIBE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_subscribe)],
+            # ADD_SUBSCRIBE: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_subscribe)],
+            ADD_SUBSCRIBE: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex(r'^(magnet:|ed2k://|ED2K://|thunder://)'), add_subscribe)],
             VIEW_SUBSCRIBE: [CallbackQueryHandler(view_subscribe)],
-            DEL_SUBSCRIBE: [MessageHandler(filters.TEXT & ~filters.COMMAND, del_subscribe)],
+            # DEL_SUBSCRIBE: [MessageHandler(filters.TEXT & ~filters.COMMAND, del_subscribe)],
+            DEL_SUBSCRIBE: [MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.Regex(r'^(magnet:|ed2k://|ED2K://|thunder://)'), del_subscribe)],
             SELECT_MAIN_CATEGORY: [CallbackQueryHandler(select_main_category)],
             SELECT_SUB_CATEGORY: [CallbackQueryHandler(select_sub_category)]
         },

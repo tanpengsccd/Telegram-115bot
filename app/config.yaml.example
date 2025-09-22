@@ -12,19 +12,28 @@ bot_token: your_bot_token
 
 # allowed_user （必填）
 # 授权可以使用该bot的user_id，可以通过@getidsbot获取
+# 数字类型不要引号
 allowed_user: your_user_id
 
 # 机器人名称 例如：@your_bot_name 
+# 非必填，转存视频需要
 bote_name: "@your_bot_name"
 
 # telegram 的api信息 
+# 非必填，转存视频需要
 tg_api_id: your_tg_api_id
 tg_api_hash: your_tg_api_hash
 
 ############################################115开放平台##################################
-# 115_app_id （必填）
+# 115_app_id 
 # 申请地址https://open.115.com/
+# 如已填写115_app_id, access_token,refresh_token可留空！
 115_app_id: your_115_app_id
+
+# 如没有115_app_id，请填写access_token和refresh_token！
+# 115_app_id和token不能同时为空！！！
+access_token: your_access_token
+refresh_token: your_refresh_token
 
 #############################################115离线下载设置###################################
 # 下载完成后自动删除文件夹中的广告文件

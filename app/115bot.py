@@ -26,7 +26,7 @@ from app.handlers.crawl_handler import register_crawl_handlers
 
 
 def get_version(md_format=False):
-    version = "v3.2.5"
+    version = "v3.2.6"
     if md_format:
         return escape_markdown(version, version=2)
     return version
@@ -39,7 +39,6 @@ def get_help_info():
 <code>/start</code> - 显示帮助信息\n
 <code>/auth</code> - <i>115扫码授权 (解除授权后使用)</i>\n
 <code>/reload</code> - <i>重载配置</i>\n
-<code>/dl</code> - 添加离线下载 [磁力|ed2k|https]\n
 <code>/rl</code> - 查看重试列表\n
 <code>/av</code> - <i>下载番号资源 (自动匹配磁力)</i>\n
 <code>/csh</code> - <i>手动爬取涩花数据</i>\n
@@ -49,8 +48,7 @@ def get_help_info():
 <code>/q</code> - 取消当前会话\n\n
 <b>✨ 功能说明</b>\n
 <u>离线下载：</u>\n
-• 输入 <code>"/dl 下载链接"</code>\n
-• 支持磁力/迅雷/ed2k/https\n
+• 直接输入下载链接，支持磁力/ed2k/迅雷\n
 • 离线超时可选择添加到重试列表\n
 • 根据配置自动生成 <code>.strm</code> 软链文件\n\n
 <u>重试列表：</u>\n
@@ -145,7 +143,6 @@ def get_bot_menu():
         BotCommand("start", "获取帮助信息"),
         BotCommand("auth", "115扫码授权"),
         BotCommand("reload", "重载配置"),
-        BotCommand("dl", "添加离线下载"),
         BotCommand("rl", "查看重试列表"),
         BotCommand("av", "指定番号下载"),
         BotCommand("csh", "手动爬取涩花数据"),

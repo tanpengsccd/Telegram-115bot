@@ -39,20 +39,30 @@ async def start_d_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ 对不起，您无权使用115机器人！")
         return ConversationHandler.END
 
-    if context.args:
-        magnet_link = " ".join(context.args)
-        context.user_data["link"] = magnet_link  # 将用户参数存储起来
-        init.logger.info(f"download link: {magnet_link}")
-        dl_url_type = is_valid_link(magnet_link)
-        # 检查链接格式是否正确
-        if dl_url_type == DownloadUrlType.UNKNOWN:
-            await update.message.reply_text("⚠️ 下载链接格式错误，请修改后重试！")
-            return ConversationHandler.END
-        # 保存下载类型到context.user_data
-        context.user_data["dl_url_type"] = dl_url_type
-    else:
-        await update.message.reply_text("⚠️ 请在'/dl '命令后输入合法的下载链接！")
+    # if context.args:
+    #     magnet_link = " ".join(context.args)
+    #     context.user_data["link"] = magnet_link  # 将用户参数存储起来
+    #     init.logger.info(f"download link: {magnet_link}")
+    #     dl_url_type = is_valid_link(magnet_link)
+    #     # 检查链接格式是否正确
+    #     if dl_url_type == DownloadUrlType.UNKNOWN:
+    #         await update.message.reply_text("⚠️ 下载链接格式错误，请修改后重试！")
+    #         return ConversationHandler.END
+    #     # 保存下载类型到context.user_data
+    #     context.user_data["dl_url_type"] = dl_url_type
+    # else:
+    #     await update.message.reply_text("⚠️ 请在'/dl '命令后输入合法的下载链接！")
+    #     return ConversationHandler.END
+    magnet_link = update.message.text.strip()
+    context.user_data["link"] = magnet_link  # 将用户参数存储起来
+    init.logger.info(f"download link: {magnet_link}")
+    dl_url_type = is_valid_link(magnet_link)
+    # 检查链接格式是否正确
+    if dl_url_type == DownloadUrlType.UNKNOWN:
+        await update.message.reply_text("⚠️ 下载链接格式错误，请修改后重试！")
         return ConversationHandler.END
+    # 保存下载类型到context.user_data
+    context.user_data["dl_url_type"] = dl_url_type
     # 显示主分类（电影/剧集）
     keyboard = [
         [InlineKeyboardButton(category["display_name"], callback_data=category["name"])] for category in
@@ -531,7 +541,13 @@ async def push2aria2(new_final_path, cover_url, message, update, context):
 def register_download_handlers(application):
     # 命令形式的下载交互
     download_command_handler = ConversationHandler(
-        entry_points=[CommandHandler("dl", start_d_command)],
+        # entry_points=[CommandHandler("dl", start_d_command)],
+         entry_points=[
+            MessageHandler(
+                filters.TEXT & filters.Regex(r'^(magnet:|ed2k://|ED2K://|thunder://)'),
+                start_d_command
+            )
+        ],
         states={
             SELECT_MAIN_CATEGORY: [CallbackQueryHandler(select_main_category)],
             SELECT_SUB_CATEGORY: [CallbackQueryHandler(select_sub_category)]
@@ -547,8 +563,12 @@ def register_download_handlers(application):
     
     # 添加消息处理器处理重命名输入（使用较低优先级的组别）
     # group=1 表示优先级低于默认的 group=0
+    # application.add_handler(MessageHandler(
+    #     filters.TEXT & ~filters.COMMAND, 
+    #     handle_manual_rename
+    # ), group=1)
     application.add_handler(MessageHandler(
-        filters.TEXT & ~filters.COMMAND, 
+        filters.TEXT & ~filters.COMMAND & ~filters.Regex(r'^(magnet:|ed2k://|ED2K://|thunder://)'), 
         handle_manual_rename
     ), group=1)
     init.logger.info("✅ Downloader处理器已注册")
