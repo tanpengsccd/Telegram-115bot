@@ -83,6 +83,14 @@ def sehua_offline():
                     # 删除离线失败的文件
                     init.openapi_115.del_faild_offline_task(task['info_hash'])
                 break
+            
+    # 等待消息队列处理完成，避免在消息发送期间删除图片文件
+    from app.utils.message_queue import message_queue
+    init.logger.info("等待涩花通知发送完成...")
+    while not message_queue.empty():
+        init.logger.debug(f"消息队列还有 {message_queue.qsize()} 个任务待处理，等待中...")
+        time.sleep(5)  # 每5秒检查一次
+    init.logger.info("所有通知已发送完成，开始清理流程")
 
     # 从共享列表中获取最终的成功计数
     domestic_original_success = success_counters[0]
@@ -116,6 +124,7 @@ def sehua_offline():
     if messages:
         final_message = "**涩花离线任务完成情况:**\n" + "\n".join(messages)
         add_task_to_queue(init.bot_config['allowed_user'], f"{init.IMAGE_PATH}/sehua_daily_update.png", final_message)
+    
     # 删除垃圾文件
     for path in save_path_list:
         init.openapi_115.auto_clean_all(path)
@@ -207,7 +216,6 @@ def sehua_success_proccesser(item, save_path, task, success_list):
                 add_task_to_queue(init.bot_config['allowed_user'], image_path, message)
             else:
                 push2aria2(f"{save_path}/{task['name']}", init.bot_config['allowed_user'], image_path, message)
-            time.sleep(10)  # 避免发送过快
             
 
 
@@ -259,6 +267,16 @@ def av_daily_offline():
                     # 删除离线失败的文件
                     init.openapi_115.del_faild_offline_task(task['info_hash'])
                 break
+            
+    # 等待消息队列处理完成，避免在消息发送期间进行清理操作
+    from app.utils.message_queue import message_queue
+    init.logger.info("等待AV日更通知发送完成...")
+    while not message_queue.empty():
+        init.logger.debug(f"消息队列还有 {message_queue.qsize()} 个任务待处理，等待中...")
+        time.sleep(5)  # 每5秒检查一次
+    init.logger.info("所有通知已发送完成，开始清理流程")
+            
+    # 发送总结消息
     total_count = len(update_list)
     success_count = sum(1 for item in update_list if item['success'])
     message = f"本次AV日更结束！总计离线：{total_count}， 成功：{success_count}， 失败：{total_count - success_count}"
@@ -268,6 +286,7 @@ def av_daily_offline():
         message += "\n失败的任务会在下次自动重试，请留意日志或通知！"
 
     add_task_to_queue(init.bot_config['allowed_user'], f"{init.IMAGE_PATH}/av_daily_update.png", message)
+    
     # 删除垃圾文件
     init.openapi_115.auto_clean_all(init.bot_config.get('av_daily_update', {}).get('save_path', '/AV/日更'))
     # 清空离线任务
@@ -305,7 +324,6 @@ def av_daily_success_proccesser(item, task):
             add_task_to_queue(init.bot_config['allowed_user'], item['post_url'], message)
         else:
             push2aria2(f"{save_path}/{task['name']}", init.bot_config['allowed_user'], item['post_url'], message)
-        time.sleep(10)  # 避免发送过快
 
 
 def offline2115(offline_tasks, task_count, save_path):
@@ -412,7 +430,6 @@ def push2aria2(save_path, user_id, cover_image, message):
         [InlineKeyboardButton(f"推送到{device_name}", callback_data=f"push2aria2_{push_task_id}")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    from app.utils.message_queue import add_task_to_queue
     add_task_to_queue(user_id, cover_image, message, reply_markup)
 
 

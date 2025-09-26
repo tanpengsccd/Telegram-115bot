@@ -22,12 +22,12 @@ async def push2aria2(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # 清理已使用的任务数据
             del init.pending_push_tasks[task_id]
         else:
-            init.logger.warning("❌ 无效的任务ID或任务已过期。")
+            init.logger.warn("❌ 无效的任务ID或任务已过期。")
             await query.answer("❌ 无效的任务ID或任务已过期。", show_alert=True)
             return
         try:
             if not save_path:
-                init.logger.warning("❌ 无效的文件路径，无法推送到Aria2。")
+                init.logger.warn("❌ 无效的文件路径，无法推送到Aria2。")
                 await query.answer("❌ 无效的文件路径，无法推送到Aria2。", show_alert=True)
                 return
             download_urls = init.openapi_115.get_file_download_url(save_path)

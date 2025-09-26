@@ -8,7 +8,6 @@ sys.path.append(current_dir)
 import init
 import datetime
 from app.utils.sqlitelib import *
-from app.utils.message_queue import add_task_to_queue
 import time
 import random
 import os
@@ -17,147 +16,18 @@ import yaml
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.parse import urlparse
-from playwright.sync_api import sync_playwright
 from playwright._impl._errors import TimeoutError as PlaywrightTimeoutError
 from app.core.offline_task_retry import sehua_offline
+from app.core.headless_browser import *
 
-
-# 全局browser和context对象
-_global_browser = None
-_global_context = None
-_global_page = None
-_playwright = None
-_base_url = None
+# 全局browser
+browser = None
 
 def get_base_url():
-    global _base_url
-    if _base_url is None:
-        _base_url = init.bot_config['sehua_spider']['base_url']
-        if not _base_url:
-            _base_url = "www.sehuatang.net"
-    return _base_url
-
-
-def init_browser():
-    """初始化全局浏览器实例"""
-    global _global_browser, _global_context, _global_page, _playwright
-    
-    if _global_browser is not None:
-        init.logger.info("浏览器已经初始化，跳过...")
-        return True
-    
-    init.logger.info("正在初始化浏览器...")
-    
-    try:
-        _playwright = sync_playwright().start()
-        
-        # 启动浏览器（无头模式）- 添加更多配置选项
-        _global_browser = _playwright.chromium.launch(
-            headless=True,
-            args=[
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--no-first-run',
-                '--no-zygote',
-                '--disable-gpu'
-            ]
-        )
-        
-        _global_context = _global_browser.new_context(
-            viewport={'width': 1280, 'height': 720},
-            user_agent=init.USER_AGENT
-        )
-        
-        _global_page = _global_context.new_page()
-        
-        # 设置较长的超时时间
-        _global_page.set_default_timeout(60000)  # 60秒
-        _global_page.set_default_navigation_timeout(60000)  # 60秒
-        
-        # 测试访问目标网站
-        base_url = get_base_url()
-        # 确保URL包含协议
-        test_url = f"https://{base_url}" if not base_url.startswith(('http://', 'https://')) else base_url
-        
-        init.logger.info(f"测试访问网站: {test_url}")
-        response = _global_page.goto(test_url, wait_until="domcontentloaded")
-        
-        if response and response.status == 200:
-            init.logger.info("浏览器初始化完成，目标网站访问正常")
-            return True
-        else:
-            status_code = response.status if response else "未知"
-            error_msg = f"访问 {test_url} 失败，返回状态码: {status_code}"
-            init.logger.warn(error_msg)
-            add_task_to_queue(
-                init.bot_config['allowed_user'], 
-                f"{init.IMAGE_PATH}/male023.png", 
-                f"⚠️ 初始化浏览器失败，无法访问 {test_url}，请检查网络连接或网站状态！"
-            )
-            # 清理已创建的资源
-            _cleanup_browser_resources()
-            return False
-            
-    except PlaywrightTimeoutError as e:
-        error_msg = f"访问 {test_url if 'test_url' in locals() else base_url} 连接超时"
-        init.logger.warn(error_msg)
-        add_task_to_queue(
-            init.bot_config['allowed_user'], 
-            f"{init.IMAGE_PATH}/male023.png", 
-            f"⚠️ 初始化浏览器失败，无法访问目标网站，连接超时！"
-        )
-        _cleanup_browser_resources()
-        return False
-        
-    except Exception as e:
-        init.logger.error(f"初始化浏览器时发生错误: {str(e)}")
-        add_task_to_queue(
-            init.bot_config['allowed_user'], 
-            f"{init.IMAGE_PATH}/male023.png", 
-            f"⚠️ 初始化浏览器失败: {str(e)}"
-        )
-        _cleanup_browser_resources()
-        return False
-
-
-def _cleanup_browser_resources():
-    """清理浏览器资源的内部函数"""
-    global _global_browser, _global_context, _global_page, _playwright
-    
-    try:
-        if _global_page:
-            _global_page.close()
-            _global_page = None
-        if _global_context:
-            _global_context.close()
-            _global_context = None
-        if _global_browser:
-            _global_browser.close()
-            _global_browser = None
-        if _playwright:
-            _playwright.stop()
-            _playwright = None
-    except Exception as e:
-        init.logger.warn(f"清理浏览器资源时出错: {str(e)}")
-
-def close_browser():
-    """关闭全局浏览器实例"""
-    try:
-        _cleanup_browser_resources()
-        init.logger.info("浏览器已关闭")
-    except Exception as e:
-        init.logger.warn(f"关闭浏览器时出错: {str(e)}")
-
-
-def get_global_page():
-    """获取全局页面对象"""
-    global _global_page
-    if _global_page is None:
-        if not init_browser():
-            return None
-    return _global_page
+    base_url = init.bot_config.get('sehua_spider', {}).get('base_url', "www.sehuatang.net")
+    if not base_url:
+        base_url = "www.sehuatang.net"
+    return base_url
 
 
 def download_image(image_url, save_path):
@@ -177,7 +47,7 @@ def download_image(image_url, save_path):
         return False, "图片URL为空"
     
     # 获取全局页面对象
-    page = get_global_page()
+    page = browser.get_global_page()
     if not page:
         return False, "无法获取浏览器页面"
     
@@ -219,8 +89,13 @@ def download_image(image_url, save_path):
                         f.write(image_data)
                     
                     file_size = len(image_data)
-                    init.logger.info(f"图片下载成功: {final_save_path} ({file_size} bytes)")
-                    return True, final_save_path
+                    if os.path.exists(final_save_path) and file_size > 0:
+                        init.logger.info(f"图片下载成功: {final_save_path} ({file_size} bytes)")
+                        return True, final_save_path
+                    else:
+                        error_msg = f"图片保存失败: {final_save_path}"
+                        init.logger.warn(error_msg)
+                        return False, error_msg
                 else:
                     error_msg = f"URL返回的不是图片内容，Content-Type: {content_type}"
                     init.logger.warn(error_msg)
@@ -254,11 +129,13 @@ def get_section_id(section_name):
 
 def sehua_spider_start():
     """完整的爬虫启动函数，包含浏览器生命周期管理"""
+    global browser
     if not init.bot_config.get('sehua_spider', {}).get('enable', False):
         return
-    
     # 初始化全局浏览器
-    if not init_browser():
+    browser = HeadlessBrowser(get_base_url())
+    
+    if not browser.page:
         return
     try:
         yesterday = datetime.datetime.now() - datetime.timedelta(days=1)
@@ -280,13 +157,15 @@ def sehua_spider_start():
         traceback.print_exc()
     finally:
         # 关闭全局浏览器
-        close_browser()
+        browser.close()
         
         
 def sehua_spider_by_date(date):
     """完整的爬虫启动函数，包含浏览器生命周期管理"""
+    global browser
+    browser = HeadlessBrowser(get_base_url())
     # 初始化全局浏览器
-    if not init_browser():
+    if not browser.page:
         return
     try:
         sections = init.bot_config['sehua_spider'].get('sections', [])
@@ -306,7 +185,7 @@ def sehua_spider_by_date(date):
         traceback.print_exc()
     finally:
         # 关闭全局浏览器
-        close_browser()
+        browser.close()
         init.CRAWL_SEHUA_STATUS = 0
     
     
@@ -319,19 +198,16 @@ def section_spider(section_name, date):
         return
     
     # 使用全局页面对象
-    page = get_global_page()
+    page = browser.get_global_page()
     
     successful_count = 0
     failed_count = 0
-
-    base_url = get_base_url()
-    
     
     results = []
 
     try:
         for i, topic in enumerate(update_list):
-            url = f"https://{base_url}/{topic}"
+            url = f"https://{browser.base_url}/{topic}"
             init.logger.debug(f"正在处理第 {i+1}/{len(update_list)} 个话题: {url}")
             
             success = False
@@ -497,13 +373,11 @@ def get_section_update(section_name, date):
     
     
     # 使用全局页面对象
-    page = get_global_page()
-    
-    base_url = get_base_url()
+    page = browser.get_global_page()
     
     try:
         for page_num in range(1, 10):
-            url = f"https://{base_url}/forum.php?mod=forumdisplay&fid={section_id}&page={page_num}"
+            url = f"https://{browser.base_url}/forum.php?mod=forumdisplay&fid={section_id}&page={page_num}"
             init.logger.info(f"正在获取 {section_name} 第 {page_num} 页...")
             
             success = False
@@ -520,7 +394,7 @@ def get_section_update(section_name, date):
                     age_check(page)
                     
                     # 等待页面完全加载
-                    wait_for_page_loaded(page, expected_elements=["tbody[id^='normalthread_']"])
+                    browser.wait_for_page_loaded(expected_elements=["tbody[id^='normalthread_']"])
 
                     # 获取页面 HTML
                     html = page.content()
@@ -612,33 +486,10 @@ def parse_section_page(html_content, date, page_num):
     return topics
 
 
-def wait_for_page_loaded(page, expected_elements=None, timeout=30000):
-    """等待页面完全加载，包括动态内容"""
-    try:
-        # 基本等待
-        page.wait_for_load_state("networkidle", timeout=timeout)
-        time.sleep(2)
-        
-        # 如果指定了期待的元素，等待它们出现
-        if expected_elements:
-            for element in expected_elements:
-                try:
-                    page.wait_for_selector(element, timeout=10000)
-                except:
-                    pass  # 某些元素可能不存在，继续
-        
-        # 额外等待确保内容完全加载
-        time.sleep(3)
-        return True
-    except Exception as e:
-        init.logger.warn(f"  等待页面加载时出错: {str(e)}")
-        return False
-
-
 def age_check(page):
     try:
         # 等待页面基本加载
-        wait_for_page_loaded(page, timeout=15000)
+        browser.wait_for_page_loaded(timeout=15000)
         
         content = page.content()
         init.logger.debug(f"  当前页面URL: {page.url}")
@@ -651,7 +502,7 @@ def age_check(page):
                 
                 # 等待页面跳转并完全加载
                 init.logger.debug("  等待页面跳转和加载...")
-                wait_for_page_loaded(page, expected_elements=["tbody[id^='normalthread_']", ".t_f"])
+                browser.wait_for_page_loaded(expected_elements=["tbody[id^='normalthread_']", ".t_f"])
                 
                 # 验证页面是否成功跳转
                 new_content = page.content()
@@ -665,13 +516,13 @@ def age_check(page):
                 # 尝试其他方式
                 try:
                     page.get_by_text("满18岁，请点此进入").click(timeout=10000)
-                    wait_for_page_loaded(page, expected_elements=["tbody[id^='normalthread_']"])
+                    browser.wait_for_page_loaded(expected_elements=["tbody[id^='normalthread_']"])
                     init.logger.debug("  使用备用方式通过年龄验证")
                 except Exception as backup_error:
                     init.logger.warn(f"  备用年龄验证方式也失败: {str(backup_error)}")
         else:
             # 即使没有年龄验证，也要等待页面完全加载
-            wait_for_page_loaded(page, expected_elements=["tbody[id^='normalthread_']"])
+            browser.wait_for_page_loaded(expected_elements=["tbody[id^='normalthread_']"])
             
     except Exception as e:
         init.logger.warn(f"  年龄验证处理出错: {str(e)}")
@@ -821,11 +672,5 @@ def get_sehua_save_path(_section_name):
 if __name__ == "__main__":
     init.load_yaml_config()
     init.create_logger()
-    sehua_spider_start()
-    # init_browser()
-    # success, message = download_image("https://tu.ymawv.la/tupian/forum/202509/02/084121l38izi9y5wdg45d0.jpg", f"{init.TEMP}/test_image")
-    # print(message)
-    # url = "https://tu.ymawv.la/tupian/forum/202509/02/084121l38izi9y5wdg45d0.jpg"
-    # parsed = urlparse(url)
-    # filename = Path(parsed.path).name
-    # print(filename)
+    init.init_db()
+    sehua_spider_by_date("2025-09-25")

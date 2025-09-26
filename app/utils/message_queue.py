@@ -10,7 +10,7 @@ message_queue = asyncio.Queue()
 global_loop = None
 
 
-def add_task_to_queue(sub_user, post_url, message, keyboard=None):
+def add_task_to_queue(sub_user, post_url, message, keyboard=None, retry_count=0):
     """向消息队列中添加任务（线程安全）"""
     global global_loop
     if global_loop is None:
@@ -19,7 +19,7 @@ def add_task_to_queue(sub_user, post_url, message, keyboard=None):
     
     try:
         future = asyncio.run_coroutine_threadsafe(
-            message_queue.put((sub_user, post_url, message, keyboard)),
+            message_queue.put((sub_user, post_url, message, keyboard, retry_count)),
             global_loop 
         )
         future.result(timeout=30)  # 等待任务添加到队列，设置超时时间
@@ -45,14 +45,22 @@ async def queue_worker(loop, token):
             # 从队列获取任务
             task_data = await message_queue.get()
             
-            # 兼容旧版本的三参数格式
+            # 兼容不同版本的任务格式
             if len(task_data) == 3:
+                # 旧版本：三参数格式
                 sub_user, post_url, message = task_data
                 keyboard = None
-            else:
+                retry_count = 0
+            elif len(task_data) == 4:
+                # 中版本：四参数格式
                 sub_user, post_url, message, keyboard = task_data
+                retry_count = 0
+            else:
+                # 新版本：五参数格式（带重试计数）
+                sub_user, post_url, message, keyboard, retry_count = task_data
                 
-            init.logger.info(f"从消息队列中取出任务: 用户[{sub_user}], 链接[{post_url}], 消息[{message}]")
+            retry_suffix = f" (重试 {retry_count}/3)" if retry_count > 0 else ""
+            init.logger.info(f"从消息队列中取出任务{retry_suffix}: 用户[{sub_user}], 链接[{post_url}], 消息[{message}]")
             
             # 检查键盘数据
             if keyboard:
@@ -88,5 +96,50 @@ async def queue_worker(loop, token):
             # 间隔防止速率限制
             await asyncio.sleep(3)
         except Exception as e:
-            init.logger.error(f"队列任务处理失败: {e}")
+            # 处理发送失败的情况
+            error_msg = str(e)
+            init.logger.warning(f"队列任务处理失败 (尝试 {retry_count + 1}/3): {error_msg}")
+            
+            try:
+                # 标记当前任务完成（避免队列阻塞）
+                message_queue.task_done()
+                
+                # 检查是否为不可重试的错误
+                non_retryable_errors = [
+                    "Invalid file http url specified: url host is empty",
+                    "Invalid file http url specified",
+                    "Bad Request: invalid file URL",
+                    "Bad Request: wrong file identifier/HTTP URL specified",
+                    "Forbidden: bot was blocked by the user",
+                    "Bad Request: chat not found",
+                    "Bad Request: user is deactivated"
+                ]
+                
+                should_retry = True
+                for non_retryable in non_retryable_errors:
+                    if non_retryable in error_msg:
+                        should_retry = False
+                        init.logger.error(f"❌ 遇到不可重试错误，直接放弃: {error_msg}")
+                        break
+                
+                # 检查是否需要重试
+                if should_retry and retry_count < 2:  # 最多重试2次（总共3次尝试）
+                    # 重新入队，增加重试计数
+                    new_retry_count = retry_count + 1
+                    await message_queue.put((sub_user, post_url, message, keyboard, new_retry_count))
+                    init.logger.info(f"任务已重新入队，将进行第 {new_retry_count + 1} 次尝试")
+                    
+                    # 重试前等待一段时间（指数退避）
+                    retry_delay = 5 * (2 ** retry_count)  # 5秒, 10秒, 20秒
+                    await asyncio.sleep(retry_delay)
+                else:
+                    # 超过最大重试次数或遇到不可重试错误，记录最终失败
+                    if should_retry:
+                        init.logger.error(f"❌ 任务重试次数已达上限，放弃重试: 用户[{sub_user}], 错误: {error_msg}")
+                    else:
+                        init.logger.error(f"❌ 任务因不可重试错误直接放弃: 用户[{sub_user}], 错误: {error_msg}")
+                    init.logger.error(f"❌ 失败消息内容: {message}")
+                    
+            except Exception as retry_error:
+                init.logger.error(f"重试处理失败: {retry_error}")
         

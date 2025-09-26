@@ -11,7 +11,6 @@ from telegram.helpers import escape_markdown
 # 导入init模块（此时__init__.py已经设置了模块路径）
 import init
 
-# 现在可以安全地导入app模块了
 from app.utils.message_queue import add_task_to_queue, queue_worker
 from app.handlers.auth_handler import register_auth_handlers
 from app.handlers.download_handler import register_download_handlers
@@ -26,7 +25,7 @@ from app.handlers.crawl_handler import register_crawl_handlers
 
 
 def get_version(md_format=False):
-    version = "v3.2.6"
+    version = "v3.2.7"
     if md_format:
         return escape_markdown(version, version=2)
     return version
