@@ -22,7 +22,7 @@ async def sync_strm_files(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 显示主分类（电影/剧集）
     keyboard = [
-        [InlineKeyboardButton(category["display_name"], callback_data=category["name"])] for category in
+        [InlineKeyboardButton(f"📁 {category['display_name']}", callback_data=category['name'])] for category in
         init.bot_config['category_folder']
     ]
     # 添加退出按钮
@@ -41,7 +41,7 @@ async def select_main_category_sync(update: Update, context: ContextTypes.DEFAUL
     if selected_main_category == "return":
         # 显示主分类
         keyboard = [
-            [InlineKeyboardButton(category["display_name"], callback_data=category["name"])]
+            [InlineKeyboardButton(f"📁 {category['display_name']}", callback_data=category['name'])]
             for category in init.bot_config['category_folder']
         ]
         keyboard.append([InlineKeyboardButton("退出", callback_data="quit")])
@@ -61,7 +61,7 @@ async def select_main_category_sync(update: Update, context: ContextTypes.DEFAUL
 
         # 创建子分类按钮
         keyboard = [
-            [InlineKeyboardButton(category["name"], callback_data=category["path"])] for category in sub_categories
+            [InlineKeyboardButton(f"📁 {category['display_name']}", callback_data=category['path'])] for category in sub_categories
         ]
         keyboard.append([InlineKeyboardButton("退出", callback_data="quit")])
         reply_markup = InlineKeyboardMarkup(keyboard)

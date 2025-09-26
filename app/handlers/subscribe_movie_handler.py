@@ -55,7 +55,7 @@ async def select_main_category(update: Update, context: ContextTypes.DEFAULT_TYP
 
         # 创建子分类按钮
         keyboard = [
-            [InlineKeyboardButton(category["name"], callback_data=category["path"])] for category in sub_categories
+            [InlineKeyboardButton(f"📁 {category['display_name']}", callback_data=category['path'])] for category in sub_categories
         ]
         keyboard.append([InlineKeyboardButton("取消", callback_data="cancel")])
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -147,7 +147,7 @@ async def add_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # 显示主分类（电影分类）
     keyboard = [
-        [InlineKeyboardButton(category["display_name"], callback_data=category["name"])]
+        [InlineKeyboardButton(f"📁 {category['display_name']}", callback_data=category['name'])]
         for category in init.bot_config['category_folder']
     ]
     keyboard.append([InlineKeyboardButton("取消", callback_data="cancel")])

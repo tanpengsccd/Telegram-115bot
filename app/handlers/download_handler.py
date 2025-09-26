@@ -50,9 +50,13 @@ async def start_d_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["dl_url_type"] = dl_url_type
     # 显示主分类（电影/剧集）
     keyboard = [
-        [InlineKeyboardButton(category["display_name"], callback_data=category["name"])] for category in
+        [InlineKeyboardButton(f"📁 {category['display_name']}", callback_data=category['name'])] for category in
         init.bot_config['category_folder']
     ]
+    # 只在有最后保存路径时才显示该选项
+    if hasattr(init, 'bot_session') and "movie_last_save" in init.bot_session:
+        last_save_path = init.bot_session['movie_last_save']
+        keyboard.append([InlineKeyboardButton(f"📁 上次保存: {last_save_path}", callback_data="last_save_path")])
     keyboard.append([InlineKeyboardButton("取消", callback_data="cancel")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     await context.bot.send_message(chat_id=update.effective_chat.id, text="❓请选择要保存到哪个分类：",
@@ -64,18 +68,32 @@ async def select_main_category(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
 
-    selected_main_category = query.data
-    if selected_main_category == "cancel":
+    query_data = query.data
+    if query_data == "cancel":
         return await quit_conversation(update, context)
+    elif query_data == "last_save_path":
+        if hasattr(init, 'bot_session') and "movie_last_save" in init.bot_session:
+            last_save_path = init.bot_session["movie_last_save"]
+            link = context.user_data["link"]
+            user_id = update.effective_user.id
+            
+            await query.edit_message_text("✅ 已为您添加到下载队列！\n请稍后~")
+            
+            # 使用全局线程池异步执行下载任务
+            download_executor.submit(download_task, link, last_save_path, user_id)
+            return ConversationHandler.END
+        else:
+            await query.edit_message_text("❌ 未找到最后一次保存路径，请重新选择分类")
+            return ConversationHandler.END
     else:
-        context.user_data["selected_main_category"] = selected_main_category
+        context.user_data["selected_main_category"] = query_data
         sub_categories = [
-            item['path_map'] for item in init.bot_config["category_folder"] if item['name'] == selected_main_category
+            item['path_map'] for item in init.bot_config["category_folder"] if item['name'] == query_data
         ][0]
 
         # 创建子分类按钮
         keyboard = [
-            [InlineKeyboardButton(category["name"], callback_data=category["path"])] for category in sub_categories
+            [InlineKeyboardButton(f"📁 {category['name']}", callback_data=category['path'])] for category in sub_categories
         ]
         keyboard.append([InlineKeyboardButton("取消", callback_data="cancel")])
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -91,6 +109,11 @@ async def select_sub_category(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # 获取用户选择的路径
     selected_path = query.data
+    # 保存最后一次选择路径
+    if not hasattr(init, 'bot_session'):
+        init.bot_session = {}
+    init.bot_session['movie_last_save'] = selected_path
+    
     if selected_path == "cancel":
         return await quit_conversation(update, context)
     link = context.user_data["link"]

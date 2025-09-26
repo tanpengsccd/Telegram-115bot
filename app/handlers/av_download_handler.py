@@ -30,9 +30,13 @@ async def start_av_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     # 显示主分类（电影/剧集）
     keyboard = [
-        [InlineKeyboardButton(category["display_name"], callback_data=category["name"])] for category in
+        [InlineKeyboardButton(f"📁 {category['display_name']}", callback_data=category['name'])] for category in
         init.bot_config['category_folder']
     ]
+    # 只在有最后保存路径时才显示该选项
+    if hasattr(init, 'bot_session') and "av_last_save" in init.bot_session:
+        last_save_path = init.bot_session['av_last_save']
+        keyboard.append([InlineKeyboardButton(f"📁 上次保存: {last_save_path}", callback_data="last_save_path")])
     keyboard.append([InlineKeyboardButton("取消", callback_data="cancel")])
     reply_markup = InlineKeyboardMarkup(keyboard)
     await context.bot.send_message(chat_id=update.effective_chat.id, text="❓请选择要保存到哪个分类：",
@@ -47,6 +51,32 @@ async def select_main_category(update: Update, context: ContextTypes.DEFAULT_TYP
     selected_main_category = query.data
     if selected_main_category == "cancel":
         return await quit_conversation(update, context)
+    elif selected_main_category == "last_save_path":
+        # 直接使用最后一次保存的路径
+        if hasattr(init, 'bot_session') and "av_last_save" in init.bot_session:
+            last_path = init.bot_session['av_last_save']
+            av_number = context.user_data["av_number"]
+            context.user_data["selected_path"] = last_path
+            user_id = update.effective_user.id
+            
+            # 抓取磁力
+            await query.edit_message_text(f"🔍 正在搜索 [{av_number}] 的磁力链接...")
+            av_result = get_av_result(av_number)
+            
+            if not av_result:
+                await query.edit_message_text(f"😵‍💫很遗憾，没有找到{av_number.upper()}的对应磁力~")
+                return ConversationHandler.END
+            
+            # 立即反馈用户
+            await query.edit_message_text(f"✅ [{av_number}] 已为您添加到下载队列！\n保存路径: {last_path}\n请稍后~")
+            
+            # 使用全局线程池异步执行下载任务
+            download_executor.submit(download_task, av_result, av_number, last_path, user_id)
+            
+            return ConversationHandler.END
+        else:
+            await query.edit_message_text("❌ 未找到最后一次保存路径，请重新选择分类")
+            return ConversationHandler.END
     else:
         context.user_data["selected_main_category"] = selected_main_category
         sub_categories = [
@@ -55,7 +85,7 @@ async def select_main_category(update: Update, context: ContextTypes.DEFAULT_TYP
 
         # 创建子分类按钮
         keyboard = [
-            [InlineKeyboardButton(category["name"], callback_data=category["path"])] for category in sub_categories
+            [InlineKeyboardButton(f"📁 {category['name']}", callback_data=category['path'])] for category in sub_categories
         ]
         keyboard.append([InlineKeyboardButton("取消", callback_data="cancel")])
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -77,6 +107,11 @@ async def select_sub_category(update: Update, context: ContextTypes.DEFAULT_TYPE
     av_number = context.user_data["av_number"]
     context.user_data["selected_path"] = selected_path
     user_id = update.effective_user.id
+    
+    # 保存最后一次使用的路径
+    if not hasattr(init, 'bot_session'):
+        init.bot_session = {}
+    init.bot_session['av_last_save'] = selected_path
     
     # 抓取磁力
     await query.edit_message_text(f"🔍 正在搜索 [{av_number}] 的磁力链接...")
@@ -153,9 +188,6 @@ def download_task(av_result, av_number, save_path, user_id):
                 
                 # 提取封面
                 cover_url, title = get_av_cover(av_number.upper())
-                cover_image = None
-                if cover_url:
-                    cover_image = cover_url
                 msg_av_number = escape_markdown(f"#{av_number.upper()}", version=2)
                 av_title = escape_markdown(title, version=2)
                 msg_title = escape_markdown(f"[{av_number.upper()}] 下载完成", version=2)
@@ -169,9 +201,9 @@ def download_task(av_result, av_number, save_path, user_id):
                 """           
                 from app.utils.message_queue import add_task_to_queue
                 if not init.aria2_client:
-                    add_task_to_queue(user_id, cover_image, message)
+                    add_task_to_queue(user_id, cover_url, message)
                 else:
-                    push2aria2(f"{save_path}/{av_number.upper()}", user_id, cover_image, message)
+                    push2aria2(f"{save_path}/{av_number.upper()}", user_id, cover_url, message)
                 return  # 成功后直接返回
             else:
                 # 删除失败的离线任务

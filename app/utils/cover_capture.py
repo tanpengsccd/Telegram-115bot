@@ -8,6 +8,7 @@ sys.path.append(current_dir)
 import requests
 from bs4 import BeautifulSoup
 import init
+from app.core.headless_browser import *
 
 
 def get_movie_cover(query):
@@ -101,25 +102,57 @@ def is_movie_exist(url, name_list):
     return img_tag
 
 
+# def get_av_cover(query):
+#     title = ""
+#     cover_url = ""
+#     headers = {"user-agent": init.USER_AGENT,
+#                "referrer": "https://avbase.net"}
+#     response = requests.get(headers=headers, url=f"https://avbase.net/works?q={query}")
+#     soup = BeautifulSoup(response.text, 'html.parser')
+#     a_tag = soup.find('a', class_='text-md font-bold btn-ghost rounded-lg m-1 line-clamp-5')
+#     if a_tag:
+#         title = a_tag.get_text(strip=True)
+#         link = f"https://avbase.net{a_tag['href']}"
+#         response = requests.get(headers=headers, url=link)
+#         soup = BeautifulSoup(response.text, 'html.parser')
+#         img_tag = soup.find('img', class_='max-w-full max-h-full')
+#         if img_tag:
+#             cover_url = img_tag['src']
+#     if title and cover_url:
+#         return cover_url, title
+#     else:
+#         return "", ""
+
 def get_av_cover(query):
-    title = ""
-    cover_url = ""
-    headers = {"user-agent": init.USER_AGENT}
-    response = requests.get(headers=headers, url=f"https://avbase.net/works?q={query}")
-    soup = BeautifulSoup(response.text, 'html.parser')
-    a_tag = soup.find('a', class_='text-md font-bold btn-ghost rounded-lg m-1 line-clamp-5')
-    if a_tag:
-        title = a_tag.get_text(strip=True)
-        link = f"https://avbase.net{a_tag['href']}"
-        response = requests.get(headers=headers, url=link)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        img_tag = soup.find('img', class_='max-w-full max-h-full')
-        if img_tag:
-            cover_url = img_tag['src']
-    if title and cover_url:
+    title = f"[{query}]已下好，但源没抓到~"
+    cover_url = f"{init.IMAGE_PATH}/no_image.png"
+    try:
+        browser = HeadlessBrowser("https://avbase.net")
+        if not browser.page:
+            return "", ""
+        search_url = f"https://avbase.net/works?q={query}"
+        browser.page.goto(search_url, wait_until="domcontentloaded")
+        html = browser.page.content()
+        soup = BeautifulSoup(html, 'html.parser')
+        a_tag = soup.find('a', class_='text-md font-bold btn-ghost rounded-lg m-1 line-clamp-5')
+        if a_tag:
+            title = a_tag.get_text(strip=True)
+            link = f"https://avbase.net{a_tag['href']}"
+            browser.page.goto(link, wait_until="domcontentloaded")
+            html = browser.page.content()
+            soup = BeautifulSoup(html, 'html.parser')
+            img_tag = soup.find('img', class_='max-w-full max-h-full')
+            if img_tag:
+                cover_url = img_tag['src']
+    except Exception as e:
+        init.logger.error(f"获取AV封面失败: {e}")
+        if 'browser' in locals():
+            browser.close()
+    finally:
+        if 'browser' in locals():
+            browser.close()
         return cover_url, title
-    else:
-        return "", ""
+    
 
 def is_av_exist(div_list):
     """
@@ -139,5 +172,8 @@ def is_av_exist(div_list):
 
 if __name__ == '__main__':
     # cover_url = get_movie_cover("阿凡达")
-    cover_url, title = get_av_cover("ssis-999")
-    print(cover_url, title)
+    init.load_yaml_config()
+    init.create_logger()
+    cover_url, title = get_av_cover("ipz-266")
+    print(f"封面URL: {cover_url}")
+    print(f"标题: {title}")

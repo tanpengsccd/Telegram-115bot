@@ -142,5 +142,6 @@ class HeadlessBrowser:
             if self.playwright:
                 self.playwright.stop()
                 self.playwright = None
+            init.logger.info("浏览器已关闭")
         except Exception as e:
             init.logger.warn(f"关闭浏览器时出错: {str(e)}")
