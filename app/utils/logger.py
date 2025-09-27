@@ -51,6 +51,14 @@ class Logger:
         :return:
         """
         self.logger.warning(message)
+        
+    def warning(self, message):
+        """
+        告警消息
+        :param message: 告警消息
+        :return:
+        """
+        self.logger.warning(message)
 
     def error(self, message):
         """

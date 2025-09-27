@@ -127,23 +127,28 @@ def get_av_cover(query):
     title = f"[{query}]已下好，但源没抓到~"
     cover_url = f"{init.IMAGE_PATH}/no_image.png"
     try:
-        browser = HeadlessBrowser("https://avbase.net")
+        browser = HeadlessBrowser("https://avmoo.website/cn")
         if not browser.page:
             return "", ""
-        search_url = f"https://avbase.net/works?q={query}"
+        search_url = f"https://avmoo.website/cn/search/{query}"
         browser.page.goto(search_url, wait_until="domcontentloaded")
         html = browser.page.content()
         soup = BeautifulSoup(html, 'html.parser')
-        a_tag = soup.find('a', class_='text-md font-bold btn-ghost rounded-lg m-1 line-clamp-5')
-        if a_tag:
-            title = a_tag.get_text(strip=True)
-            link = f"https://avbase.net{a_tag['href']}"
-            browser.page.goto(link, wait_until="domcontentloaded")
-            html = browser.page.content()
-            soup = BeautifulSoup(html, 'html.parser')
-            img_tag = soup.find('img', class_='max-w-full max-h-full')
-            if img_tag:
-                cover_url = img_tag['src']
+        # 找到class为"item"的div
+        item_div = soup.find('div', class_='item')
+        # 在item_div中找到a标签，class为"movie-box"
+        movie_link = item_div.find('a', class_='movie-box')
+        link = movie_link['href']  # 获取href属性
+        if link and link.startswith('//'):
+            link = f"https:{link}"
+        img_tag = movie_link.find('img')
+        title = img_tag['title']
+        browser.page.goto(link, wait_until="domcontentloaded")
+        html = browser.page.content()
+        soup = BeautifulSoup(html, 'html.parser')
+        screencap_div = soup.find('div', class_='screencap')
+        big_image_link = screencap_div.find('a', class_='bigImage')
+        cover_url = big_image_link['href'] 
     except Exception as e:
         init.logger.error(f"获取AV封面失败: {e}")
         if 'browser' in locals():
@@ -174,6 +179,6 @@ if __name__ == '__main__':
     # cover_url = get_movie_cover("阿凡达")
     init.load_yaml_config()
     init.create_logger()
-    cover_url, title = get_av_cover("ipz-266")
+    cover_url, title = get_av_cover("ipz-466")
     print(f"封面URL: {cover_url}")
     print(f"标题: {title}")

@@ -98,7 +98,7 @@ async def queue_worker(loop, token):
         except Exception as e:
             # 处理发送失败的情况
             error_msg = str(e)
-            init.logger.warning(f"队列任务处理失败 (尝试 {retry_count + 1}/3): {error_msg}")
+            init.logger.warn(f"队列任务处理失败 (尝试 {retry_count + 1}/3): {error_msg}")
             
             try:
                 # 标记当前任务完成（避免队列阻塞）
