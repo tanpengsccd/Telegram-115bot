@@ -10,64 +10,62 @@ from app.utils.cover_capture import get_movie_cover
 from telegram.helpers import escape_markdown
 
 
-def get_tmdb_id(movie_name):
+def get_tmdb_id(movie_name, page=1):
     """
     从TMDB获取电影ID
     :param movie_name: 电影名称
     :return: (tmdb_id, title) 或 (None, None)
     """
     base_url = "https://www.themoviedb.org"
-    search_url = f"{base_url}/search?query={movie_name}"
+    search_url = f"{base_url}/search/movie?query={movie_name}&page={page}"
 
     headers = {
         "user-agent": init.USER_AGENT,
         "accept-language": "zh-CN"
     }
-    init.logger.info(f"正在从TMDB搜索电影: {movie_name}")
+    init.logger.info(f"正在从TMDB[第{page}]页搜索电影: {movie_name}")
+    tmdb_id = 0
     try:
-        response = requests.get(url=search_url, headers=headers)
-        response.raise_for_status()
-
+        response = requests.get(url=search_url, headers=headers, timeout=30)
         soup = BeautifulSoup(response.text, features="html.parser")
-
-        # 检查是否有搜索结果
-        no_results = soup.find('p', class_='zero-results')
-        if no_results and "没有找到相关结果" in no_results.text:
-            return None
-
-        # 查找第一个电影结果
-        movie_cards = soup.find_all('div', class_='card')
-        if not movie_cards:
-            return None
-
-        for movie_card in movie_cards:
-            # 获取链接和标题
-            link = movie_card.find('a', class_='result')
-            if not link or 'href' not in link.attrs:
-                return None
-
-            # 从URL中提取TMDB ID
-            href = link['href']
-            img_tag = link.find('img')
-            title = img_tag['alt']
-            if title.strip() == movie_name.strip():
-                if '/movie/' not in href:
-                    init.logger.warn(f"[{movie_name}]类型不是电影，115Bot暂时只支持电影的订阅！")
-                    return None
-
-                tmdb_id = href.split('/movie/')[-1].split('-')[0]
-                if not tmdb_id.isdigit():
-                    return None
+        tags_p = soup.find_all('p')
+        for tag in tags_p:
+            if "找不到和您的查询相符的电影" in tag.text:
+                init.logger.info(f"TMDB未找到匹配电影: {movie_name}")
+                return ""
+        all_movie_links = soup.find_all('a', class_='result')
+        for link in all_movie_links:
+            # 提取电影ID
+            href = link.get('href', '')
+            movie_id = href.split('/')[-1].split('-')[0] if href else 'N/A'
+            
+            # 提取中文标题
+            h2_tag = link.find('h2')
+            chinese_title = 'N/A'
+            if h2_tag:
+                # 获取h2的所有文本，然后去掉英文标题部分
+                full_text = h2_tag.get_text(strip=True)
+                # 找到英文标题的起始位置（如果有的话）
+                if '(' in full_text:
+                    chinese_title = full_text.split('(')[0].strip()
                 else:
-                    break
-
-        return int(tmdb_id)
-
-    except requests.exceptions.RequestException as e:
-        init.logger.warn(f"获取TMDB ID失败: {str(e)}")
-        return None
+                    chinese_title = full_text
+            
+            # 提取英文标题
+            english_title_span = link.find('span', class_='title')
+            english_title = 'N/A'
+            if english_title_span:
+                english_title = english_title_span.get_text(strip=True).strip('()')
+            if chinese_title == movie_name or english_title == movie_name:
+                tmdb_id = movie_id
+                title = f"{chinese_title} ({english_title})"
+                init.logger.info(f"找到匹配电影: {title}，TMDB ID: {tmdb_id}")
+                return tmdb_id
+        # 如果没有找到，尝试下一页
+        time.sleep(3)
+        return get_tmdb_id(movie_name, page + 1)
     except Exception as e:
-        init.logger.warn(f"解析TMDB页面失败: {str(e)}")
+        init.logger.error(f"从TMDB获取电影ID失败: {e}")
         return None
     
 

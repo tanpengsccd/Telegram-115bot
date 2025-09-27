@@ -11,14 +11,14 @@ import init
 from app.core.headless_browser import *
 
 
-def get_movie_cover(query):
+def get_movie_cover(query, page=1):
     """
     封面抓取
     :param query:
     :return:
     """
     base_url = "https://www.themoviedb.org"
-    url = f"https://www.themoviedb.org/search?query={query}"
+    url = f"https://www.themoviedb.org/search/movie?query={query}&page={page}"
     headers = {
         "user-agent": init.USER_AGENT,
         "accept-language": "zh-CN"
@@ -27,13 +27,17 @@ def get_movie_cover(query):
     if response.status_code != 200:
         return ""
     soup = BeautifulSoup(response.text, features="html.parser")
-    tags_p = soup.findAll('p')
-    if "找不到和您的查询相符的电影" in tags_p[1].text:
-        return ""
-    tags_img = soup.findAll('img')
-    image_tag = is_movie_exist(url, tags_img)
+    tags_p = soup.find_all('p')
+    for tag in tags_p:
+        if "找不到和您的查询相符的电影" in tag.text:
+            init.logger.info(f"TMDB未找到匹配电影: {query}")
+            return ""
+    tags_img = soup.find_all('img')
+    image_tag = is_movie_exist(query, tags_img)
     if image_tag is None:
-        return ""
+        page += 1
+        time.sleep(3)
+        return get_movie_cover(query, page)
     tag_parent = image_tag.find_parent('a')
     if 'href' not in tag_parent.attrs:
         return ""
@@ -43,7 +47,7 @@ def get_movie_cover(query):
     if response.status_code != 200:
         return ""
     soup = BeautifulSoup(response.text, features="html.parser")
-    tags_img = soup.findAll('img')
+    tags_img = soup.find_all('img')
     if len(tags_img) > 1 and 'src' not in tags_img[1].attrs:
         return ""
     cover_url = tags_img[1]['src']
@@ -58,9 +62,9 @@ def get_movie_cover(query):
 #     response = requests.get(headers=headers, url=f"https://www.javbus.com/search/{query}")
 #     if response.status_code == 200:
 #         soup = BeautifulSoup(response.text, features="html.parser")
-#         container_fluid_div = soup.findAll('div', class_='container-fluid')
+#         container_fluid_div = soup.find_all('div', class_='container-fluid')
 #         row_div = container_fluid_div[1].find('div', class_='row')
-#         a_tags = row_div.findAll('a', class_='movie-box')
+#         a_tags = row_div.find_all('a', class_='movie-box')
 #         for a_tag in a_tags:
 #             if 'href' in a_tag.attrs:  # 确保存在 href 属性
 #                 if query.lower() in str(a_tag['href']).lower():
@@ -73,9 +77,9 @@ def get_movie_cover(query):
 #         if response.status_code != 200:
 #             return ""
 #         soup = BeautifulSoup(response.text, features="html.parser")
-#         container_fluid_div = soup.findAll('div', class_='container-fluid')
+#         container_fluid_div = soup.find_all('div', class_='container-fluid')
 #         row_div = container_fluid_div[1].find('div', class_='row')
-#         a_tags = row_div.findAll('a', class_='movie-box')
+#         a_tags = row_div.find_all('a', class_='movie-box')
 #         for a_tag in a_tags:
 #             if 'href' in a_tag.attrs:  # 确保存在 href 属性
 #                 if query.lower() in str(a_tag['href']).lower():
@@ -85,14 +89,13 @@ def get_movie_cover(query):
 #     return cover_url
 
 
-def is_movie_exist(url, name_list):
+def is_movie_exist(movie_name, name_list):
     """
     判断搜索结果是否存在
     :param url:
     :param name_list:
     :return:
     """
-    movie_name = url[str(url).index('=') + 1:len(url)]
     img_tag = None
     for name in name_list:
         if 'alt' in name.attrs:
@@ -157,7 +160,6 @@ def get_av_cover(query):
         if 'browser' in locals():
             browser.close()
         return cover_url, title
-    
 
 def is_av_exist(div_list):
     """
@@ -176,9 +178,13 @@ def is_av_exist(div_list):
 
 
 if __name__ == '__main__':
-    # cover_url = get_movie_cover("阿凡达")
-    init.load_yaml_config()
-    init.create_logger()
-    cover_url, title = get_av_cover("ipz-466")
+    # init.create_logger()
+    # tmdb_id = get_tmdb_id("死人", 20)
+    # print(f"TMDB ID: {tmdb_id}")
+    cover_url = get_movie_cover("死人", 20)
     print(f"封面URL: {cover_url}")
-    print(f"标题: {title}")
+    # init.load_yaml_config()
+    # init.create_logger()
+    # cover_url, title = get_av_cover("ipz-466")
+    # print(f"封面URL: {cover_url}")
+    # print(f"标题: {title}")
