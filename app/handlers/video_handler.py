@@ -68,7 +68,7 @@ async def select_main_category_video(update: Update, context: ContextTypes.DEFAU
 
         # 创建子分类按钮
         keyboard = [
-            [InlineKeyboardButton(f"📁 {category['display_name']}", callback_data=category['path'])] for category in sub_categories
+            [InlineKeyboardButton(f"📁 {category['name']}", callback_data=category['path'])] for category in sub_categories
         ]
         keyboard.append([InlineKeyboardButton("返回", callback_data="return")])
         reply_markup = InlineKeyboardMarkup(keyboard)

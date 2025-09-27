@@ -55,7 +55,7 @@ async def select_main_category(update: Update, context: ContextTypes.DEFAULT_TYP
 
         # 创建子分类按钮
         keyboard = [
-            [InlineKeyboardButton(f"📁 {category['display_name']}", callback_data=category['path'])] for category in sub_categories
+            [InlineKeyboardButton(f"📁 {category['name']}", callback_data=category['path'])] for category in sub_categories
         ]
         keyboard.append([InlineKeyboardButton("取消", callback_data="cancel")])
         reply_markup = InlineKeyboardMarkup(keyboard)
