@@ -25,7 +25,7 @@ from app.handlers.crawl_handler import register_crawl_handlers
 
 
 def get_version(md_format=False):
-    version = "v3.2.9"
+    version = "v3.2.10"
     if md_format:
         return escape_markdown(version, version=2)
     return version
@@ -194,7 +194,18 @@ if __name__ == '__main__':
     application.add_handler(reload_handler)
     
     # 初始化115open对象
-    init.initialize_115open()
+    if not init.initialize_115open():
+        init.logger.error("115 OpenAPI客户端初始化失败，程序无法继续运行！")
+        add_task_to_queue(
+            init.bot_config['allowed_user'], 
+            f"{init.IMAGE_PATH}/male023.png", 
+            message="❌ 115 OpenAPI客户端初始化失败，程序无法继续运行！\n请检查Token或115 AppID设置是否正确！"
+        )
+        # 等待消息队列处理完毕再退出
+        while not message_queue.message_queue.empty():
+            time.sleep(5)
+        time.sleep(30)
+        exit(1)
 
 
     # 注册Auth

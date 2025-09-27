@@ -6,6 +6,7 @@ import sys
 import shutil
 from typing import Optional
 from telethon import TelegramClient
+from app.core.open_115 import OpenAPI_115
 
 
 # 模块路径现在通过 Dockerfile 中的 PYTHONPATH 环境变量设置
@@ -201,15 +202,13 @@ def initialize_115open():
     """
     global openapi_115, logger
     try:
-        # 尝试使用app包导入，失败则使用直接导入
-        try:
-            from app.core.open_115 import OpenAPI_115
-        except ImportError:
-            from open_115 import OpenAPI_115
-            
         openapi_115 = OpenAPI_115()
         # 检查是否成功获取到token
         if openapi_115.access_token and openapi_115.refresh_token:
+            user_info = openapi_115.get_user_info()
+            if not user_info:
+                logger.error("115 OpenAPI客户端初始化失败: 无法获取用户信息")
+                return False
             logger.info("115 OpenAPI客户端初始化成功")
             return True
         else:
