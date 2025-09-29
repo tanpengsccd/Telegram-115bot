@@ -4,10 +4,15 @@ services:
     container_name: tg-bot-115
     environment:
       TZ: Asia/Shanghai
+      # 填写代理如果需要的话
+      # HTTP_PROXY: http://your_http_proxy:proxy_port
+      # HTTPS_PROXY: http://your_https_proxy:proxy_port
+      # NO_PROXY: localhost,127.0.0.1,::1  # 根据实际需要添加其他不需代理的地址
     image: qiqiandfei/115-bot:latest
     # privileged: True
     restart: unless-stopped
     volumes:
       - /to/your/path/config:/config  # 配置目录
+      - /to/your/path/tmp:/tmp        # 临时目录
       - /to/your/path/media:/media    # 媒体目录（软链目录）
       - /to/your/path/CloudNAS:/CloudNAS:rslave # CD2挂载目录
