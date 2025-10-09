@@ -1053,20 +1053,186 @@ class OpenAPI_115:
             file_ids = ",".join(fid_list)
             self.delet_file(file_ids)
 
+    def batch_process_downloads(self, download_path, resource_names):
+        """
+        批量处理下载完成的文件，优化API调用次数
+
+        Args:
+            download_path: 下载目录路径
+            resource_names: 资源名称列表
+
+        Returns:
+            dict: {
+                "resource_name": {
+                    "is_directory": bool,
+                    "files": list,  # 该资源下的文件列表
+                    "file_id": str,
+                    "path": str
+                }
+            }
+        """
+        result = {}
+
+        # 第一步：获取下载目录的file_id（只调用一次）
+        parent_info = self.get_file_info(download_path)
+        if not parent_info:
+            init.logger.warn(f"获取下载目录信息失败: {download_path}")
+            return result
+
+        parent_cid = parent_info['file_id']
+
+        # 第二步：获取下载目录下所有文件和子目录信息（只调用一次）
+        params = {
+            "cid": parent_cid,
+            "limit": 1000,
+            "show_dir": 1  # 同时显示文件和目录
+        }
+        all_items = self.get_file_list(params)
+
+        if not all_items:
+            init.logger.warn(f"获取目录列表失败: {download_path}")
+            return result
+
+        # 第三步：为每个资源建立索引（在内存中处理，无需额外API调用）
+        items_map = {}
+        for item in all_items:
+            item_name = item.get('fn', '')
+            items_map[item_name] = {
+                "is_directory": item.get('fc') == '0',  # fc=0表示目录
+                "file_id": item.get('fid'),
+                "size": item.get('fs', 0),
+                "category": item.get('fc')
+            }
+
+        # 第四步：处理每个资源
+        for resource_name in resource_names:
+            if resource_name not in items_map:
+                init.logger.warn(f"资源不存在: {resource_name}")
+                continue
+
+            item_info = items_map[resource_name]
+            resource_path = f"{download_path}/{resource_name}"
+
+            result[resource_name] = {
+                "is_directory": item_info["is_directory"],
+                "files": [],
+                "file_id": item_info["file_id"],
+                "path": resource_path
+            }
+
+            # 如果是目录，获取目录下的文件列表
+            if item_info["is_directory"]:
+                dir_params = {
+                    "cid": item_info["file_id"],
+                    "type": 4,  # 视频文件
+                    "limit": 1000
+                }
+                file_list = self.get_file_list(dir_params)
+                if file_list:
+                    result[resource_name]["files"] = [f['fn'] for f in file_list]
+            else:
+                # 如果是单个文件，文件列表就是它自己
+                result[resource_name]["files"] = [resource_name]
+
+        init.logger.info(f"批量处理完成，共处理 {len(result)} 个资源")
+        return result
+
+    def batch_auto_clean(self, download_path, resource_names):
+        """
+        批量清理多个下载资源的垃圾文件
+
+        Args:
+            download_path: 下载目录路径
+            resource_names: 资源名称列表
+        """
+        # 开关关闭直接返回
+        if str(init.bot_config['clean_policy']['switch']).lower() == "off":
+            return
+
+        # 获取下载目录信息（只调用一次）
+        parent_info = self.get_file_info(download_path)
+        if not parent_info:
+            init.logger.warn(f"获取下载目录信息失败: {download_path}")
+            return
+
+        parent_cid = parent_info['file_id']
+
+        # 获取下载目录下所有文件（只调用一次）
+        params = {
+            "cid": parent_cid,
+            "limit": 1000,
+            "show_dir": 1
+        }
+        all_items = self.get_file_list(params)
+
+        if not all_items:
+            return
+
+        # 计算字节大小
+        byte_size = 0
+        less_than = init.bot_config['clean_policy']['less_than']
+        if less_than is not None:
+            if str(less_than).upper().endswith("M"):
+                byte_size = int(less_than[:-1]) * 1024 * 1024
+            elif str(less_than).upper().endswith("K"):
+                byte_size = int(less_than[:-1]) * 1024
+            elif str(less_than).upper().endswith("G"):
+                byte_size = int(less_than[:-1]) * 1024 * 1024 * 1024
+
+        # 收集所有需要清理的目录ID
+        dir_ids = []
+        for item in all_items:
+            if item.get('fn') in resource_names and item.get('fc') == '0':  # 是目录
+                dir_ids.append(item.get('fid'))
+
+        if not dir_ids:
+            return
+
+        # 批量清理每个目录（减少API调用）
+        all_fid_to_delete = []
+
+        for dir_id in dir_ids:
+            dir_params = {
+                "cid": dir_id,
+                "limit": 1000,
+                "show_dir": 1
+            }
+            file_list = self.get_file_list(dir_params)
+
+            if not file_list:
+                continue
+
+            for file in file_list:
+                # 删除小于指定大小的文件
+                if file['fc'] == '1':  # 是文件
+                    if file['fs'] < byte_size:
+                        all_fid_to_delete.append(file['fid'])
+                        init.logger.info(f"[{file['fn']}]已添加到清理列表")
+                # 目录直接删除
+                else:
+                    all_fid_to_delete.append(file['fid'])
+                    init.logger.info(f"[{file['fn']}]已添加到清理列表")
+
+        # 一次性删除所有垃圾文件
+        if all_fid_to_delete:
+            file_ids = ",".join(all_fid_to_delete)
+            self.delet_file(file_ids)
+            init.logger.info(f"批量清理完成，共删除 {len(all_fid_to_delete)} 个文件/目录")
+
     def find_all_junk_files(self, cid, offset, byte_size, file_list=None, limit=1150):
         """
         递归查找所有小于指定大小的垃圾文件
-        
+
         使用分页查询和文件大小排序优化，当最后一个文件仍小于目标大小时继续递归查找，
         否则停止查询并过滤返回小于目标大小的文件。
-        
+
         Args:
             cid: 目录ID
             offset: 偏移量，用于分页
             byte_size: 目标文件大小（字节），小于此大小的文件被视为垃圾文件
             file_list: 已找到的文件列表，用于递归累积
             limit: 每页查询的文件数量，默认1150
-            
+
         Returns:
             list: 所有小于目标大小的文件列表，包含文件的fid、fn、fs等信息
         """

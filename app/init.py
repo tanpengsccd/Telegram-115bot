@@ -69,6 +69,15 @@ aria2_client = None
 CRAWL_SEHUA_STATUS = 0  # 涩花爬取状态
 CRAWL_JAV_STATUS = 0    # javbee爬取状态
 
+# 用户消息收集缓冲区（用于合并短时间内的多条链接消息）
+# {user_id: {
+#     "messages": [msg1_text, msg2_text, ...],  # 所有消息文本
+#     "links": [...],                           # 所有提取的链接
+#     "timer_task": asyncio.Task,               # 定时器任务
+#     "context": ContextTypes.DEFAULT_TYPE,     # 保存context
+#     "chat_id": int                            # 聊天ID
+# }}
+pending_messages_buffer = {}
 
 # yaml配置文件
 CONFIG_FILE = "/config/config.yaml"
@@ -174,7 +183,7 @@ def get_bot_token():
                 f.close()
             bot_config = yaml.load(cfg, Loader=yaml.FullLoader)
             bot_token = bot_config['bot_token']
-        return bot_token
+    return bot_token
 
 def create_tmp():
     if not os.path.exists(TEMP):

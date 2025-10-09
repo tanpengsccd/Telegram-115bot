@@ -66,7 +66,26 @@ async def queue_worker(loop, token):
                 sub_user, post_url, message, keyboard, retry_count = task_data
                 
             retry_suffix = f" (重试 {retry_count}/3)" if retry_count > 0 else ""
-            init.logger.info(f"从消息队列中取出任务{retry_suffix}: 用户[{sub_user}], 链接[{post_url}], 消息[{message}]")
+            # 显示链接时，如果post_url为None，尝试从message中提取下载链接
+            display_link = post_url
+            if not display_link and message:
+                # 尝试从消息中提取各种类型的链接
+                import re
+                # 匹配 HTTP(S)、FTP、磁力链、电驴链接
+                link_patterns = [
+                    r'(https?://[^\s\]]+)',
+                    r'(ftp://[^\s\]]+)',
+                    r'(ed2k://[^\s\]]+)',
+                    r'(magnet:\?[^\s\]]+)',
+                    r'(thunder://[^\s\]]+)'
+                ]
+                for pattern in link_patterns:
+                    link_match = re.search(pattern, message, re.IGNORECASE)
+                    if link_match:
+                        found_link = link_match.group(1)
+                        display_link = found_link[:100] + "..." if len(found_link) > 100 else found_link
+                        break
+            init.logger.info(f"从消息队列中取出任务{retry_suffix}: 用户[{sub_user}], 链接[{display_link}], 消息[{message}]")
             
             # 检查键盘数据
             if keyboard:

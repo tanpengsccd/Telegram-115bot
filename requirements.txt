@@ -11,3 +11,4 @@ urllib3==2.5.0
 Pillow==11.2.1
 bs4==0.0.2
 aria2p==0.12.1
+nest-asyncio==1.6.0
