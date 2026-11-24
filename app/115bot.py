@@ -128,7 +128,12 @@ def send_start_message():
 
 def update_logger_level():
     import logging
+    # 禁用 HTTP 库的冗余日志
     logging.getLogger('httpx').setLevel(logging.WARNING)
+    logging.getLogger('httpcore').setLevel(logging.WARNING)
+    logging.getLogger('urllib3').setLevel(logging.WARNING)
+    logging.getLogger('urllib3.connectionpool').setLevel(logging.WARNING)
+    # 禁用 Telegram 库的冗余日志
     logging.getLogger('telegram').setLevel(logging.WARNING)
     logging.getLogger('telegram.ext.Application').setLevel(logging.WARNING)
     logging.getLogger('telegram.ext.Updater').setLevel(logging.WARNING)
@@ -194,18 +199,27 @@ if __name__ == '__main__':
     application.add_handler(reload_handler)
     
     # 初始化115open对象
-    if not init.initialize_115open():
-        init.logger.error("115 OpenAPI客户端初始化失败，程序无法继续运行！")
-        add_task_to_queue(
-            init.get_primary_user(),
-            f"{init.IMAGE_PATH}/male023.png",
-            message="❌ 115 OpenAPI客户端初始化失败，程序无法继续运行！\n请检查Token或115 AppID设置是否正确！"
-        )
-        # 等待消息队列处理完毕再退出
-        while not message_queue.message_queue.empty():
-            time.sleep(5)
-        time.sleep(30)
-        exit(1)
+    is_115_ready = init.initialize_115open()
+    if not is_115_ready:
+        if init.openapi_115 is None:
+            init.logger.error("115 OpenAPI客户端初始化失败，程序无法继续运行！")
+            add_task_to_queue(
+                init.get_primary_user(),
+                f"{init.IMAGE_PATH}/male023.png",
+                message=escape_markdown("❌ 115 OpenAPI客户端初始化失败，程序无法继续运行！\n请检查Token或115 AppID设置是否正确！", version=2)
+            )
+            # 等待消息队列处理完毕再退出
+            while not message_queue.message_queue.empty():
+                time.sleep(5)
+            time.sleep(30)
+            exit(1)
+        else:
+            init.logger.warn("115 Token 无效或已过期，机器人将继续启动以便使用 /auth 重新扫码授权。")
+            add_task_to_queue(
+                init.get_primary_user(),
+                f"{init.IMAGE_PATH}/male023.png",
+                message=escape_markdown("⚠️ 115 授权已过期或无效！\n机器人已启动，请发送 /auth 重新扫码授权。", version=2)
+            )
 
 
     # 注册Auth
@@ -233,7 +247,8 @@ if __name__ == '__main__':
         start_scheduler_in_thread()
         init.logger.info("订阅线程启动成功！")
         time.sleep(3)  # 等待订阅线程启动
-        send_start_message()
+        if is_115_ready:
+            send_start_message()
         application.run_polling()  # 阻塞运行
     except KeyboardInterrupt:
         init.logger.info("程序已被用户终止（Ctrl+C）。")

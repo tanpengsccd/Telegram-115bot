@@ -6,7 +6,6 @@ import sys
 import shutil
 from typing import Optional
 from telethon import TelegramClient
-from app.core.open_115 import OpenAPI_115
 
 
 # 模块路径现在通过 Dockerfile 中的 PYTHONPATH 环境变量设置
@@ -21,14 +20,20 @@ def _ensure_module_paths():
     current_dir = os.path.dirname(os.path.abspath(__file__))
     parent_dir = os.path.dirname(current_dir)
 
+    sub_dirs = [
+        os.path.join(current_dir, 'utils'),
+        os.path.join(current_dir, 'core'),
+        os.path.join(current_dir, 'handlers'),
+    ]
+
     # 检测是否在 /app/app 这种嵌套结构中
     if current_dir.endswith('/app/app') or current_dir.endswith('\\app\\app'):
         # 在嵌套app目录中，需要添加上层app目录到路径
         upper_app_dir = os.path.dirname(current_dir)  # /app
-        required_paths = [upper_app_dir, current_dir, parent_dir]
+        required_paths = [upper_app_dir, current_dir, parent_dir, *sub_dirs]
     else:
         # 标准结构
-        required_paths = [current_dir, parent_dir]
+        required_paths = [current_dir, parent_dir, *sub_dirs]
 
     for path in required_paths:
         if path not in sys.path:
@@ -43,6 +48,7 @@ def _ensure_module_paths():
 # 执行路径检查
 _ensure_module_paths()
 
+from app.core.open_115 import OpenAPI_115
 from app.utils.logger import Logger
 from app.utils.sqlitelib import *
 
@@ -232,8 +238,8 @@ def initialize_115open():
         # 检查是否成功获取到token
         if openapi_115.access_token and openapi_115.refresh_token:
             user_info = openapi_115.get_user_info()
-            if not user_info:
-                logger.error("115 OpenAPI客户端初始化失败: 无法获取用户信息")
+            if not isinstance(user_info, dict) or 'user_name' not in user_info:
+                logger.error("115 OpenAPI客户端初始化失败: 无法获取用户信息（Token可能已失效，请发送 /auth 重新授权）")
                 return False
             logger.info("115 OpenAPI客户端初始化成功")
             return True
@@ -419,13 +425,21 @@ def init_db():
             post_url TEXT, -- 封面url
             publish_date DATETIME, -- 发布时间
             pub_url TEXT, -- 资源链接
-            image_path TEXT, -- 图片本地路径 
+            image_path TEXT, -- 图片本地路径
             save_path TEXT, -- 保存路径
             is_download TINYINT DEFAULT 0, -- 是否下载, 0或1, 默认0
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP -- 创建时间，默认当前时间
         );
         '''
         sqlite.execute_sql(create_table_query)
+
+        # 批量任务管理表
+        from app.core.batch_task_manager import initialize_batch_task_tables
+        import os
+        # 从环境变量读取 RESET_SQL，默认为 False
+        reset_sql = os.environ.get('RESET_SQL', 'false').lower() in ('true', '1', 'yes')
+        initialize_batch_task_tables(reset_sql=reset_sql)
+
         logger.info("init DataBase success.")
         
 

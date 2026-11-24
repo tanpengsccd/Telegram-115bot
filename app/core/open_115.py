@@ -37,27 +37,29 @@ def handle_token_expiry(func):
                         # token需要刷新
                         if attempt < max_retries - 1:  # 还有重试机会
                             init.logger.info("Token需要刷新，正在重试...")
-                            self.refresh_access_token()
-                            continue
+                            if self.refresh_access_token():
+                                continue
+                            init.logger.warn("Token刷新失败，请发送 /auth 重新扫码授权！")
+                            return None
                         else:
                             init.logger.warn("Token刷新后仍然失败")
-                            return response
+                            return None
                     elif response['code'] in [40140116, 40140119]:
                         # token已过期，需要重新授权
                         init.logger.warn("Access token 已过期，请重新授权！")
-                        return response
+                        return None
                     elif response['code'] == 40140118:
                         init.logger.warn("开发者认证已过期，请到115开放平台重新授权！")
-                        return response
+                        return None
                     elif response['code'] == 40140110:
                         init.logger.warn("应用已过期，请到115开放平台重新授权！")
-                        return response
+                        return None
                     elif response['code'] == 40140109:
                         init.logger.warn("应用被停用，请到115开放平台查询详细信息！")
-                        return response
+                        return None
                     elif response['code'] == 40140108:
                         init.logger.warn("应用审核未通过，请稍后再试！")
-                        return response
+                        return None
                 
                 # 成功或其他情况，直接返回
                 return response
@@ -79,6 +81,9 @@ class OpenAPI_115:
         self.access_token = ""
         self.refresh_token = ""
         self.base_url = "https://proapi.115.com"
+        # 速率限制器：1请求/秒
+        self._last_request_time = 0
+        self._rate_limit_interval = 1.0  # 秒
         self.get_token()  # 初始化时获取token
         
     def get_token(self):
@@ -185,13 +190,16 @@ class OpenAPI_115:
         if not self.refresh_token:
             if not os.path.exists(init.TOKEN_FILE):
                 init.logger.warn("请先进行授权，获取refresh_token！")
-                add_task_to_queue(init.get_primary_user(), "/app/images/male023.png", "请先进行授权，获取refresh_token！")
-                return
+                add_task_to_queue(init.get_primary_user(), f"{init.IMAGE_PATH}/male023.png", "请先进行授权，获取refresh_token！")
+                return False
             with open(init.TOKEN_FILE, 'r', encoding='utf-8') as f:
                 tokens = json.load(f)
                 # 从文件中读取access_token和refresh_token
                 self.access_token = tokens.get('access_token', '')
                 self.refresh_token = tokens.get('refresh_token', '')
+            if not self.refresh_token:
+                init.logger.warn("Token文件中缺少refresh_token，请重新授权！")
+                return False
         
         header = {
             "Content-Type": "application/x-www-form-urlencoded"
@@ -201,16 +209,27 @@ class OpenAPI_115:
         data = {
             "refresh_token": self.refresh_token
         }
-        response = requests.post(url, headers=header, data=data)
-        res = response.json()
-        if response.status_code == 200 and 'data' in res:
-            self.access_token = res['data']['access_token']
-            self.refresh_token = res['data']['refresh_token']
+        try:
+            response = requests.post(url, headers=header, data=data, timeout=15)
+            res = response.json()
+        except Exception as e:
+            init.logger.warn(f"Access token 刷新请求失败: {e}")
+            return False
+        token_data = res.get('data') if isinstance(res, dict) else None
+        if (
+            response.status_code == 200
+            and isinstance(token_data, dict)
+            and token_data.get('access_token')
+            and token_data.get('refresh_token')
+        ):
+            self.access_token = token_data['access_token']
+            self.refresh_token = token_data['refresh_token']
             self.save_token_to_file(self.access_token, self.refresh_token, init.TOKEN_FILE)
             init.logger.info("Access token 更新成功.")
+            return True
         else:
-            init.logger.warn("Access token 更新失败!")
-            raise Exception(f"Failed to refresh access token: {response.text}")
+            init.logger.warn(f"Access token 更新失败: {res}")
+            return False
         
 
     def _get_headers(self):
@@ -221,20 +240,81 @@ class OpenAPI_115:
 
     def _make_api_request(self, method: str, url: str, params=None, data=None, headers=None):
         """统一的API请求方法"""
+        import json
         if headers is None:
             headers = self._get_headers()
-        
+
+        # 速率限制：确保请求间隔至少1秒
+        current_time = time.time()
+        if self._last_request_time > 0:  # 不是第一次请求
+            time_since_last_request = current_time - self._last_request_time
+            if time_since_last_request < self._rate_limit_interval:
+                sleep_time = self._rate_limit_interval - time_since_last_request
+                init.logger.debug(f"[Rate Limit] Waiting {sleep_time:.2f}s to respect 1 req/s limit")
+                time.sleep(sleep_time)
+
+        # 更新最后请求时间（在请求发出之前更新）
+        self._last_request_time = time.time()
+
+        # 提取 URL 路径（用于简洁日志）
+        url_path = url.replace(self.base_url, '')
+
+        # INFO 级别：输出简洁的请求信息
+        if params:
+            param_str = '&'.join([f"{k}={v}" for k, v in params.items()])
+            init.logger.info(f"[API] {method} {url_path}?{param_str}")
+        else:
+            init.logger.info(f"[API] {method} {url_path}")
+
+        # DEBUG 级别：输出详细的请求信息
+        if init.logger.logger.level <= 10:  # DEBUG = 10
+            init.logger.debug("═" * 50)
+            init.logger.debug(f"➤ {method.upper()} {url}")
+            if params:
+                param_lines = [f"{k}={v}" for k, v in params.items()]
+                init.logger.debug(f"  Query: {', '.join(param_lines)}")
+            if data:
+                init.logger.debug(f"  Data: {data}")
+
         if method.upper() == 'GET':
             response = requests.get(url, headers=headers, params=params)
         elif method.upper() == 'POST':
             response = requests.post(url, headers=headers, data=data)
         else:
             raise ValueError(f"不支持的HTTP方法: {method}")
-        
+
+        # 计算耗时
+        elapsed_ms = int(response.elapsed.total_seconds() * 1000)
+
+        # INFO 级别：输出简洁的响应信息
+        status_icon = "✓" if response.status_code == 200 else "✗"
+        init.logger.info(f"[API] {status_icon} {response.status_code} ({elapsed_ms}ms)")
+
+        # DEBUG 级别：输出详细的响应信息
+        if init.logger.logger.level <= 10:  # DEBUG = 10
+            init.logger.debug(f"✓ Status: {response.status_code} {response.reason} ({elapsed_ms}ms)")
+
         if response.status_code == 200:
-            return response.json()
+            result = response.json()
+
+            # DEBUG 级别：美化输出响应内容
+            if init.logger.logger.level <= 10:  # DEBUG = 10
+                try:
+                    # 尝试美化 JSON 输出
+                    formatted_json = json.dumps(result, indent=2, ensure_ascii=False)
+                    # 限制输出长度，避免日志过大
+                    if len(formatted_json) > 2000:
+                        formatted_json = formatted_json[:2000] + "\n  ... (truncated)"
+                    init.logger.debug(f"  Response:\n{formatted_json}")
+                except:
+                    init.logger.debug(f"  Response: {result}")
+                init.logger.debug("═" * 50)
+
+            return result
         else:
             init.logger.warn(f"API请求失败: {response.status_code} - {response.text}")
+            if init.logger.logger.level <= 10:  # DEBUG = 10
+                init.logger.debug("═" * 50)
             return {"code": response.status_code, "message": response.text}
     
     @handle_token_expiry
@@ -346,6 +426,44 @@ class OpenAPI_115:
         else:
             if response['code'] == 40140125:
                 return response
+
+            # 处理任务已存在的情况（code: 10008）
+            if response.get('code') == 10008:
+                info_hash = response.get('info_hash')
+                duplicate_url = response.get('url')
+
+                if info_hash and duplicate_url:
+                    init.logger.warn(f"检测到重复任务（code: 10008）: {duplicate_url[:80]}...")
+                    init.logger.info(f"尝试删除并重新添加任务，info_hash: {info_hash}")
+
+                    try:
+                        # 先删除已存在的任务（只移除任务记录，不删除文件）
+                        del_result = self.del_faild_offline_task(info_hash, delete_source_file=False)
+
+                        if del_result:
+                            init.logger.info(f"已删除重复任务，等待1秒后重新提交...")
+                            time.sleep(1)
+
+                            # 重新提交任务
+                            retry_response = self._make_api_request('POST', url, data=data, headers=self._get_headers())
+
+                            if retry_response.get('state') == True:
+                                init.logger.info(f"重新提交成功: {duplicate_url[:80]}...")
+                                return True
+                            else:
+                                init.logger.error(f"重新提交失败: {retry_response.get('message')}")
+                                raise Exception(f"重新提交失败: {retry_response.get('message')}")
+                        else:
+                            init.logger.error(f"删除重复任务失败")
+                            raise Exception(f"任务已存在且删除失败: {duplicate_url[:80]}...")
+
+                    except Exception as e:
+                        init.logger.error(f"处理重复任务时出错: {e}")
+                        raise
+                else:
+                    init.logger.warn(f"code 10008 但缺少 info_hash 或 url 信息: {response}")
+                    raise Exception(response.get('message', '任务已存在'))
+
             init.logger.warn(f"批量离线下载任务添加失败: {response['message']}")
             raise Exception(response['message'])
 
@@ -394,11 +512,18 @@ class OpenAPI_115:
             return None
     
     @handle_token_expiry
-    def del_faild_offline_task(self, info_hash):
+    def del_faild_offline_task(self, info_hash, delete_source_file=True):
+        """
+        删除离线任务
+
+        Args:
+            info_hash (str): 离线任务的 info_hash
+            delete_source_file (bool): 是否同时删除源文件，默认删除（匹配旧行为）
+        """
         url = f"{self.base_url}/open/offline/del_task"
         data = {
             "info_hash": info_hash,
-            "del_source_file": 1
+            "del_source_file": 1 if delete_source_file else 0
         }
         response = self._make_api_request('POST', url, data=data, headers=self._get_headers())
         if response['state'] == True:
@@ -703,7 +828,7 @@ class OpenAPI_115:
             return response['data']
         else:
             init.logger.warn(f"获取用户信息失败: {response}")
-            if response['code'] == 40140125:
+            if isinstance(response, dict) and response.get('code') == 40140125:
                 return response
             return None
         
@@ -718,7 +843,7 @@ class OpenAPI_115:
             return response['data']
         else:
             init.logger.warn(f"获取配额信息失败: {response}")
-            if response['code'] == 40140125:
+            if isinstance(response, dict) and response.get('code') == 40140125:
                 return response
             return None
         
@@ -787,21 +912,25 @@ class OpenAPI_115:
     def welcome_message(self):
         """欢迎消息"""
         user_info = self.get_user_info()
-        quota_info = self.get_quota_info()
-        if user_info:
-            user_name = user_info.get('user_name')
-            total_space= user_info['rt_space_info']['all_total']['size_format']
-            used_space = user_info['rt_space_info']['all_use']['size_format']
-            remaining_space = user_info['rt_space_info']['all_remain']['size_format']
-            vip_info = user_info.get('vip_info', {})
-            expire_date = datetime.fromtimestamp(vip_info.get('expire', 0), tz=timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
-            line1 = escape_markdown(f"👋 [{user_name}]您好， 欢迎使用Telegram-115Bot！", version=2)
-            line2 = escape_markdown(f"会员等级：{vip_info.get('level_name', '')}；到期时间：{expire_date}", version=2)
-            line3 = escape_markdown(f"总空间：{total_space} 已用：{used_space} 剩余：{remaining_space}", version=2)
-            line4 = escape_markdown(f"离线配额：{quota_info['used']}/{quota_info['count']}", version=2)   
-            return line1, line2, line3, line4
-        else:
+        if not isinstance(user_info, dict) or 'rt_space_info' not in user_info:
             return "", "", "", ""
+        quota_info = self.get_quota_info()
+        user_name = user_info.get('user_name', '')
+        rt_space = user_info.get('rt_space_info', {})
+        total_space = rt_space.get('all_total', {}).get('size_format', '未知')
+        used_space = rt_space.get('all_use', {}).get('size_format', '未知')
+        remaining_space = rt_space.get('all_remain', {}).get('size_format', '未知')
+        vip_info = user_info.get('vip_info', {})
+        expire_date = datetime.fromtimestamp(vip_info.get('expire', 0), tz=timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S")
+        line1 = escape_markdown(f"👋 [{user_name}]您好， 欢迎使用Telegram-115Bot！", version=2)
+        line2 = escape_markdown(f"会员等级：{vip_info.get('level_name', '')}；到期时间：{expire_date}", version=2)
+        line3 = escape_markdown(f"总空间：{total_space} 已用：{used_space} 剩余：{remaining_space}", version=2)
+        if isinstance(quota_info, dict) and 'used' in quota_info and 'count' in quota_info:
+            quota_text = f"{quota_info['used']}/{quota_info['count']}"
+        else:
+            quota_text = "未知"
+        line4 = escape_markdown(f"离线配额：{quota_text}", version=2)
+        return line1, line2, line3, line4
 
 
     def check_offline_download_success(self, url, offline_timeout=300):
@@ -1203,15 +1332,13 @@ class OpenAPI_115:
                 continue
 
             for file in file_list:
-                # 删除小于指定大小的文件
+                # 只删除小于指定大小的文件
                 if file['fc'] == '1':  # 是文件
                     if file['fs'] < byte_size:
                         all_fid_to_delete.append(file['fid'])
                         init.logger.info(f"[{file['fn']}]已添加到清理列表")
-                # 目录直接删除
-                else:
-                    all_fid_to_delete.append(file['fid'])
-                    init.logger.info(f"[{file['fn']}]已添加到清理列表")
+                # 跳过目录，不要删除子目录（可能包含有效内容）
+                # 如果需要清理空目录，应该在确认目录为空后再删除
 
         # 一次性删除所有垃圾文件
         if all_fid_to_delete:
@@ -1442,5 +1569,3 @@ if __name__ == "__main__":
     # welcome_text = app.welcome_message()
     # init.logger.info(welcome_text)
     # app.clear_cloud_task()  # 清理云端任务
-
-

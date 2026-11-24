@@ -19,14 +19,14 @@ class Logger:
         ch.setFormatter(fmt)
         ch.setLevel(level)
         self.logger.addHandler(ch)
-        
-        if not debug_model:
-            from app.init import CONFIG
-            # 日志文件输出
-            fs = logging.FileHandler(os.path.join(CONFIG, "115bot.log"), encoding="utf-8", mode='w')
-            fs.setLevel(level)
-            fs.setFormatter(fmt)
-            self.logger.addHandler(fs)
+
+        # 始终启用文件输出（无论是否为 debug_model）
+        from app.init import CONFIG
+        # 日志文件输出
+        fs = logging.FileHandler(os.path.join(CONFIG, "115bot.log"), encoding="utf-8", mode='w')
+        fs.setLevel(level)
+        fs.setFormatter(fmt)
+        self.logger.addHandler(fs)
 
     def debug(self, message):
         """

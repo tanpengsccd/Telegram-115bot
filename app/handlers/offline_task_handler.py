@@ -143,7 +143,9 @@ def try_to_offline2115_again():
                     init.openapi_115.clear_failed_task(link)
                 break
     
-    # 清除云端任务，避免重复下载
+    # ⚠️ 注意：clear_cloud_task() 会清空所有离线任务（包括其他用户/批量任务）
+    # 建议：应该只清理当前重试的任务（通过 del_faild_offline_task + info_hash）
+    # TODO: 改为逐个清理重试任务，避免影响其他任务
     init.openapi_115.clear_cloud_task()
 
 async def view_retry_list(update: Update, context: ContextTypes.DEFAULT_TYPE):

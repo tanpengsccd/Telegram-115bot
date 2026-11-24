@@ -220,7 +220,9 @@ def download_task(av_result, av_number, save_path, user_id):
         add_task_to_queue(init.get_primary_user(), f"{init.IMAGE_PATH}/male023.png",
                             message=f"❌ 下载任务执行出错: {str(e)}")
     finally:
-        # 清空离线任务
+        # ⚠️ 注意：clear_cloud_task() 会清空所有离线任务（包括其他用户/批量任务）
+        # 建议：应该只清理当前 AV 下载任务（通过 del_faild_offline_task + info_hash）
+        # TODO: 改为只清理本次尝试的磁力链接任务，避免影响其他任务
         init.openapi_115.clear_cloud_task()
         
 def push2aria2(save_path, user_id, cover_image, message):

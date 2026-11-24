@@ -10,6 +10,7 @@ from app.core.av_daily_update import av_daily_update, repair_leak
 from app.handlers.offline_task_handler import try_to_offline2115_again
 from app.core.sehua_spider import sehua_spider_start
 from app.core.offline_task_retry import offline_task_retry
+from app.core.batch_task_retry import execute_batch_retry
 
 scheduler = BlockingScheduler()
 
@@ -19,7 +20,8 @@ tasks = [
     {"id": "av_daily_update_task", "func": av_daily_update, "hour": 20, "minute": 00, "task_type": "time"},
     {"id": "offline_task_retry_task", "func": offline_task_retry, "hour": "9,18", "minute": 00, "task_type": "time"},
     {"id": "retry_failed_downloads", "func": try_to_offline2115_again, "interval": 12 * 60 * 60, "task_type": "interval"},
-    {"id": "sehua_spider_task", "func": sehua_spider_start, "hour": 0, "minute": 5, "task_type": "time"}
+    {"id": "sehua_spider_task", "func": sehua_spider_start, "hour": 0, "minute": 5, "task_type": "time"},
+    {"id": "batch_task_retry", "func": execute_batch_retry, "interval": 10 * 60, "task_type": "interval"}  # 每10分钟执行一次
 ]
 
 def subscribe_scheduler():

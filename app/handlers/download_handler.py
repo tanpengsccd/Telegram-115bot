@@ -34,6 +34,99 @@ class DownloadUrlType(Enum):
         return self.value
 
 
+def _ensure_bot_session():
+    if not hasattr(init, 'bot_session'):
+        init.bot_session = {}
+    return init.bot_session
+
+
+def _ensure_user_last_save_map():
+    session = _ensure_bot_session()
+    if 'user_last_save' not in session or not isinstance(session['user_last_save'], dict):
+        session['user_last_save'] = {}
+    return session['user_last_save']
+
+
+def remember_user_last_save_path(user_id: int, selected_path: str):
+    session = _ensure_bot_session()
+    session['movie_last_save'] = selected_path  # 兼容旧逻辑
+    user_map = _ensure_user_last_save_map()
+    user_map[user_id] = selected_path
+
+
+def get_user_last_save_path(user_id: int):
+    if hasattr(init, 'bot_session'):
+        session = init.bot_session
+        user_map = session.get('user_last_save')
+        if isinstance(user_map, dict):
+            return user_map.get(user_id)
+    return None
+
+
+def clear_user_last_save_path(user_id: int = None):
+    if not hasattr(init, 'bot_session'):
+        return False
+
+    cleared = False
+    session = init.bot_session
+
+    if user_id is None:
+        if 'movie_last_save' in session:
+            session.pop('movie_last_save', None)
+            cleared = True
+        if 'user_last_save' in session:
+            session.pop('user_last_save', None)
+            cleared = True
+    else:
+        user_map = session.get('user_last_save')
+        if isinstance(user_map, dict) and user_id in user_map:
+            user_map.pop(user_id, None)
+            cleared = True
+    return cleared
+
+
+async def finalize_download_submission(context, user_id, selected_path, custom_folder_name, *,
+                                       query=None, chat_id=None, auto_note=""):
+    links = context.user_data.get("links", [])
+    if not links:
+        message = "❌ 未找到下载链接数据，请重新发送链接"
+        if query:
+            await query.edit_message_text(message)
+        elif chat_id is not None:
+            await context.bot.send_message(chat_id=chat_id, text=message)
+        return ConversationHandler.END
+
+    total_count = len(links)
+    remember_user_last_save_path(user_id, selected_path)
+
+    message_lines = [
+        f"✅ 已为您添加 {total_count} 个下载任务到队列！",
+        f"📁 保存路径: {selected_path}",
+        "请稍后~"
+    ]
+    if auto_note:
+        message_lines.append(auto_note)
+    text = "\n".join(message_lines)
+
+    if query:
+        await query.edit_message_text(text)
+    elif chat_id is not None:
+        await context.bot.send_message(chat_id=chat_id, text=text)
+
+    # 使用批量下载处理（减少API调用频率）
+    download_executor.submit(
+        download_tasks_batch,
+        links,
+        selected_path,
+        user_id,
+        custom_folder_name
+    )
+
+    # 清理用户数据
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
 def sanitize_folder_name(text: str) -> str:
     """
     清理文件夹名称:
@@ -68,37 +161,20 @@ def extract_folder_name_from_text(message_text: str) -> str:
     """
     lines = message_text.strip().split('\n')
 
-    # 过滤掉空行和只包含链接的行
+    # 过滤掉空行和只包含链接的行（使用统一的链接检测函数）
     non_link_lines = []
     for line in lines:
         line = line.strip()
         if not line:
             continue
 
-        # 先检查整行是否是链接（支持包含空格的ED2K链接）
-        if is_valid_link(line) != DownloadUrlType.UNKNOWN:
-            # 整行是链接，跳过
+        # 使用统一的链接检测函数（支持带前缀的链接）
+        if line_contains_link(line):
+            # 该行包含链接，跳过整行
             continue
 
-        # 整行不是链接，检查行内是否包含链接（按空格分割检查）
-        contains_link = False
-        for fragment in line.split():
-            if is_valid_link(fragment.strip()) != DownloadUrlType.UNKNOWN:
-                contains_link = True
-                break
-
-        # 如果该行不包含链接，直接使用
-        if not contains_link:
-            non_link_lines.append(line)
-        else:
-            # 提取该行中的非链接文字部分
-            text_parts = []
-            for fragment in line.split():
-                fragment = fragment.strip()
-                if fragment and is_valid_link(fragment) == DownloadUrlType.UNKNOWN:
-                    text_parts.append(fragment)
-            if text_parts:
-                non_link_lines.append(' '.join(text_parts))
+        # 该行不包含链接，直接使用
+        non_link_lines.append(line)
 
     if not non_link_lines:
         return ""
@@ -145,17 +221,25 @@ async def trigger_batch_download_after_delay(user_id: int, chat_id: int, context
         if custom_folder_name:
             init.logger.info(f"从合并消息中提取到自定义文件夹名: {custom_folder_name}")
 
+        # 如果用户曾经选择过保存路径，则直接复用，免去再次选择
+        last_save_path = get_user_last_save_path(user_id)
+        if last_save_path:
+            auto_note = "🤖 已自动使用上次的保存路径，发送 /reset_save_path 可重新选择。"
+            await finalize_download_submission(
+                context,
+                user_id,
+                last_save_path,
+                custom_folder_name,
+                chat_id=chat_id,
+                auto_note=auto_note
+            )
+            return
+
         # 构建分类选择键盘
         keyboard = [
             [InlineKeyboardButton(f"📁 {category['display_name']}", callback_data=category['name'])]
             for category in init.bot_config['category_folder']
         ]
-
-        # 只在有最后保存路径时才显示该选项
-        if hasattr(init, 'bot_session') and "movie_last_save" in init.bot_session:
-            last_save_path = init.bot_session['movie_last_save']
-            keyboard.append([InlineKeyboardButton(f"📁 上次保存: {last_save_path}", callback_data="last_save_path")])
-
         keyboard.append([InlineKeyboardButton("取消", callback_data="cancel")])
         reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -210,31 +294,9 @@ async def start_d_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message_text = update.message.text.strip()
     chat_id = update.effective_chat.id
 
-    # 解析多个下载链接（按行分割，支持包含空格的链接）
-    # 先尝试按行提取完整链接（支持ED2K等包含空格的文件名）
+    # 解析多个下载链接（使用统一的链接提取函数）
     lines = message_text.split('\n')
-    valid_links = []
-
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
-
-        # 检查整行是否是有效链接
-        dl_url_type = is_valid_link(line)
-        if dl_url_type != DownloadUrlType.UNKNOWN:
-            valid_links.append({"link": line, "type": dl_url_type})
-            continue
-
-        # 如果整行不是链接，尝试按空格分割（兼容多个链接在同一行的情况）
-        fragments = line.split()
-        for fragment in fragments:
-            fragment = fragment.strip()
-            if not fragment:
-                continue
-            dl_url_type = is_valid_link(fragment)
-            if dl_url_type != DownloadUrlType.UNKNOWN:
-                valid_links.append({"link": fragment, "type": dl_url_type})
+    valid_links = extract_links_from_lines(lines)
 
     # 检查是否有有效链接
     if not valid_links:
@@ -292,28 +354,38 @@ async def select_main_category(update: Update, context: ContextTypes.DEFAULT_TYP
     if query_data == "cancel":
         return await quit_conversation(update, context)
     elif query_data == "last_save_path":
-        if hasattr(init, 'bot_session') and "movie_last_save" in init.bot_session:
-            last_save_path = init.bot_session["movie_last_save"]
-            links = context.user_data["links"]
-            user_id = update.effective_user.id
-            total_count = len(links)
-
-            # 获取自定义文件夹名(如果有)
+        user_id = update.effective_user.id
+        last_save_path = get_user_last_save_path(user_id)
+        if last_save_path:
             custom_folder_name = context.user_data.get("custom_folder_name", "")
-
-            await query.edit_message_text(f"✅ 已为您添加 {total_count} 个下载任务到队列！\n请稍后~")
-
-            # 使用批量下载处理（减少API调用频率）
-            download_executor.submit(download_tasks_batch, links, last_save_path, user_id, custom_folder_name)
-            return ConversationHandler.END
-        else:
-            await query.edit_message_text("❌ 未找到最后一次保存路径，请重新选择分类")
-            return ConversationHandler.END
+            return await finalize_download_submission(
+                context,
+                user_id,
+                last_save_path,
+                custom_folder_name,
+                query=query
+            )
+        await query.edit_message_text("❌ 未找到最后一次保存路径，请重新选择分类")
+        return ConversationHandler.END
     else:
         context.user_data["selected_main_category"] = query_data
+        custom_folder_name = context.user_data.get("custom_folder_name", "")
+        user_id = update.effective_user.id
         sub_categories = [
             item['path_map'] for item in init.bot_config["category_folder"] if item['name'] == query_data
         ][0]
+
+        if len(sub_categories) == 1:
+            selected_path = sub_categories[0]['path']
+            auto_note = f"📁 {sub_categories[0]['name']} 只有一个保存目录，已自动选择。"
+            return await finalize_download_submission(
+                context,
+                user_id,
+                selected_path,
+                custom_folder_name,
+                query=query,
+                auto_note=auto_note
+            )
 
         # 创建子分类按钮
         keyboard = [
@@ -333,26 +405,29 @@ async def select_sub_category(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # 获取用户选择的路径
     selected_path = query.data
-    # 保存最后一次选择路径
-    if not hasattr(init, 'bot_session'):
-        init.bot_session = {}
-    init.bot_session['movie_last_save'] = selected_path
-
     if selected_path == "cancel":
         return await quit_conversation(update, context)
-    links = context.user_data["links"]
-    selected_main_category = context.user_data["selected_main_category"]
     user_id = update.effective_user.id
-    total_count = len(links)
 
     # 获取自定义文件夹名(如果有)
     custom_folder_name = context.user_data.get("custom_folder_name", "")
 
-    await query.edit_message_text(f"✅ 已为您添加 {total_count} 个下载任务到队列！\n请稍后~")
+    return await finalize_download_submission(
+        context,
+        user_id,
+        selected_path,
+        custom_folder_name,
+        query=query
+    )
 
-    # 使用批量下载处理（减少API调用频率）
-    download_executor.submit(download_tasks_batch, links, selected_path, user_id, custom_folder_name)
-    return ConversationHandler.END
+
+async def reset_save_path_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    cleared = clear_user_last_save_path(user_id)
+    if cleared:
+        await update.message.reply_text("✅ 已清除保存路径，下次会重新提示分类。")
+    else:
+        await update.message.reply_text("ℹ️ 当前没有记录的保存路径。")
 
 
 # === 独立的全局回调处理器（支持定时器触发的消息）===
@@ -380,7 +455,6 @@ async def handle_category_selection_global(update: Update, context: ContextTypes
         return
 
     custom_folder_name = context.user_data.get("custom_folder_name", "")
-    total_count = len(links)
 
     # 处理取消
     if query_data == "cancel":
@@ -391,12 +465,15 @@ async def handle_category_selection_global(update: Update, context: ContextTypes
 
     # 处理"上次保存路径"
     if query_data == "last_save_path":
-        if hasattr(init, 'bot_session') and "movie_last_save" in init.bot_session:
-            last_save_path = init.bot_session["movie_last_save"]
-            await query.edit_message_text(f"✅ 已为您添加 {total_count} 个下载任务到队列！\n请稍后~")
-            download_executor.submit(download_tasks_batch, links, last_save_path, user_id, custom_folder_name)
-            # 清理用户数据
-            context.user_data.clear()
+        last_save_path = get_user_last_save_path(user_id)
+        if last_save_path:
+            await finalize_download_submission(
+                context,
+                user_id,
+                last_save_path,
+                custom_folder_name,
+                query=query
+            )
         else:
             await query.edit_message_text("❌ 未找到最后一次保存路径，请重新选择分类")
         return
@@ -413,6 +490,19 @@ async def handle_category_selection_global(update: Update, context: ContextTypes
             if item['name'] == query_data
         ][0]
 
+        if len(sub_categories) == 1:
+            selected_path = sub_categories[0]['path']
+            auto_note = f"📁 {sub_categories[0]['name']} 只有一个保存目录，已自动选择。"
+            await finalize_download_submission(
+                context,
+                user_id,
+                selected_path,
+                custom_folder_name,
+                query=query,
+                auto_note=auto_note
+            )
+            return
+
         # 创建子分类按钮
         keyboard = [
             [InlineKeyboardButton(f"📁 {category['name']}", callback_data=category['path'])]
@@ -427,18 +517,13 @@ async def handle_category_selection_global(update: Update, context: ContextTypes
     # 否则视为子分类路径
     selected_path = query_data
 
-    # 保存最后一次选择路径
-    if not hasattr(init, 'bot_session'):
-        init.bot_session = {}
-    init.bot_session['movie_last_save'] = selected_path
-
-    await query.edit_message_text(f"✅ 已为您添加 {total_count} 个下载任务到队列！\n请稍后~")
-
-    # 使用批量下载处理
-    download_executor.submit(download_tasks_batch, links, selected_path, user_id, custom_folder_name)
-
-    # 清理用户数据
-    context.user_data.clear()
+    await finalize_download_submission(
+        context,
+        user_id,
+        selected_path,
+        custom_folder_name,
+        query=query
+    )
 
 
 async def handle_retry_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -494,20 +579,120 @@ async def quit_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-def is_valid_link(link: str) -> DownloadUrlType:    
+def is_valid_link(link: str) -> DownloadUrlType:
     # 定义链接模式字典
     patterns = {
         DownloadUrlType.MAGNET: r'^magnet:\?xt=urn:btih:([a-fA-F0-9]{40}|[a-zA-Z2-7]{32})(?:&.+)?$',
         DownloadUrlType.ED2K: r'^ed2k://\|file\|.+\|[0-9]+\|[a-fA-F0-9]{32}\|',
         DownloadUrlType.THUNDER: r'^thunder://[a-zA-Z0-9=]+'
     }
-    
+
     # 检查基本链接类型
     for url_type, pattern in patterns.items():
         if re.match(pattern, link):
             return url_type
-        
+
     return DownloadUrlType.UNKNOWN
+
+
+def line_contains_link(line: str) -> bool:
+    """
+    检查一行文本是否包含下载链接（包括带前缀的链接）
+
+    Args:
+        line: 文本行
+
+    Returns:
+        True 如果包含链接，False 否则
+    """
+    line = line.strip()
+    if not line:
+        return False
+
+    # 检查整行是否是有效链接
+    if is_valid_link(line) != DownloadUrlType.UNKNOWN:
+        return True
+
+    # 定义链接检测的正则表达式
+    link_detection_patterns = [
+        r'ed2k://\|file\|[^\|]+\|[0-9]+\|[a-fA-F0-9]{32}\|/?',
+        r'magnet:\?xt=urn:btih:[a-fA-F0-9]{40}(?:[&\?][^\s]*)?',
+        r'thunder://[a-zA-Z0-9=]+',
+    ]
+
+    # 使用正则表达式检测行中是否包含链接
+    for pattern in link_detection_patterns:
+        if re.search(pattern, line, re.IGNORECASE):
+            return True
+
+    # 按空格分割检查
+    for fragment in line.split():
+        if is_valid_link(fragment.strip()) != DownloadUrlType.UNKNOWN:
+            return True
+
+    return False
+
+
+def extract_links_from_lines(lines: list) -> list:
+    """
+    统一的链接提取函数，从文本行中提取所有有效的下载链接
+
+    支持格式：
+    1. 纯链接行：magnet:?xt=urn:btih:...
+    2. 带前缀的链接：链接: ed2k://|file|...
+    3. 同行多个链接（按空格分割）
+    4. 文件名包含空格的 ed2k 链接
+
+    Args:
+        lines: 文本行列表
+
+    Returns:
+        包含链接信息的列表，格式: [{"link": "...", "type": DownloadUrlType}, ...]
+    """
+    valid_links = []
+
+    # 定义链接提取的正则表达式（用于从文本中提取链接）
+    link_extraction_patterns = [
+        (DownloadUrlType.ED2K, r'ed2k://\|file\|[^\|]+\|[0-9]+\|[a-fA-F0-9]{32}\|/?'),
+        (DownloadUrlType.MAGNET, r'magnet:\?xt=urn:btih:[a-fA-F0-9]{40}(?:[&\?][^\s]*)?'),
+        (DownloadUrlType.THUNDER, r'thunder://[a-zA-Z0-9=]+'),
+    ]
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        # 检查整行是否是有效链接
+        dl_url_type = is_valid_link(line)
+        if dl_url_type != DownloadUrlType.UNKNOWN:
+            valid_links.append({"link": line, "type": dl_url_type})
+            continue
+
+        # 尝试从行中提取链接（支持 "链接: ed2k://..." 这样的格式）
+        found_in_line = False
+        for link_type, pattern in link_extraction_patterns:
+            matches = re.findall(pattern, line, re.IGNORECASE)
+            for match in matches:
+                # 验证提取的链接是否有效
+                if is_valid_link(match) != DownloadUrlType.UNKNOWN:
+                    valid_links.append({"link": match, "type": link_type})
+                    found_in_line = True
+
+        if found_in_line:
+            continue
+
+        # 如果整行不是链接且没有提取到链接，尝试按空格分割（兼容多个链接在同一行的情况）
+        fragments = line.split()
+        for fragment in fragments:
+            fragment = fragment.strip()
+            if not fragment:
+                continue
+            dl_url_type = is_valid_link(fragment)
+            if dl_url_type != DownloadUrlType.UNKNOWN:
+                valid_links.append({"link": fragment, "type": dl_url_type})
+
+    return valid_links
 
 
 def create_strm_file(new_name, file_list):
@@ -593,14 +778,14 @@ def save_failed_download_to_db(title, magnet, save_path):
         raise str(e)
 
 
-def format_batch_progress_message(total_count, task_results, max_lines=48):
+def format_batch_progress_message(total_count, task_results, max_chars=4096):
     """
-    格式化批量下载进度消息，限制行数并优先显示错误
+    格式化批量下载进度消息，限制字符数并优先显示错误
 
     Args:
         total_count: 总任务数
         task_results: 任务结果列表 [{"index": 1, "status": "success/failed", "name": "...", "link": "..."}]
-        max_lines: 最大行数（默认48行）
+        max_chars: 最大字符数（Telegram单条消息限制4096字符）
 
     Returns:
         格式化的消息文本
@@ -610,59 +795,228 @@ def format_batch_progress_message(total_count, task_results, max_lines=48):
     success_tasks = [t for t in task_results if t.get("status") == "success"]
 
     # 构建消息头
-    message_lines = [f"正在进行的总 {total_count} 个链接的下载任务："]
+    header_lines = [f"正在进行的总 {total_count} 个链接的下载任务："]
 
-    # 计算可用行数（减去头部和可能的省略提示）
-    available_lines = max_lines - 1  # 头部占1行
+    # 如果有失败任务，添加失败提示头
+    if failed_tasks:
+        header_lines.append("❌ 离线下载超时，已添加到重试列表：")
 
-    # 优先显示错误信息
+    header_text = "\n".join(header_lines)
+
+    # 预留字符空间
+    # - 头部文本
+    # - 省略提示（如果需要）：约80字符 × 2条（失败+成功）
+    # - 安全边距：100字符
+    reserved_chars = len(header_text) + 80 * 2 + 100
+    available_chars = max_chars - reserved_chars
+
+    # 优先显示错误链接
     displayed_failed = []
     displayed_success = []
     omitted_failed_count = 0
+    omitted_success_count = 0
+    current_length = 0
 
-    # 先添加失败的任务（全部显示）
+    # 第一步：优先添加所有失败任务的链接
     for task in failed_tasks:
-        display_link = task.get("link", "")[:50] + "..." if len(task.get("link", "")) > 50 else task.get("link", "")
-        line = f"❌ {task['index']}/{total_count} [{display_link}] 离线下载超时，已自动添加到重试列表"
-        displayed_failed.append(line)
+        # 完整显示失败链接，不截断（方便用户复制）
+        display_link = task.get("link", "")
+        line_length = len(display_link) + 1  # +1 for newline
 
-    # 计算剩余可显示成功任务的行数
-    remaining_lines = available_lines - len(displayed_failed)
+        # 检查是否超出可用字符数
+        if current_length + line_length > available_chars:
+            # 超出限制，剩余的失败任务将被省略
+            omitted_failed_count = len(failed_tasks) - len(displayed_failed)
+            break
 
-    # 如果还有空间，显示最新的成功任务
-    if remaining_lines > 0:
-        # 倒序显示最新的成功任务
-        success_tasks_to_show = success_tasks[-remaining_lines:]
-        for task in success_tasks_to_show:
+        displayed_failed.append(display_link)
+        current_length += line_length
+
+    # 第二步：如果还有空间，添加成功任务（显示最新的）
+    remaining_chars = available_chars - current_length
+
+    if remaining_chars > 100:  # 至少有100字符才显示成功任务
+        # 倒序遍历最新的成功任务
+        for task in reversed(success_tasks):
             line = f"✅ {task['index']}/{total_count} [{task.get('name', '未知')}]"
-            displayed_success.append(line)
+            line_length = len(line) + 1  # +1 for newline
 
-        # 计算被省略的成功任务数
-        omitted_success_count = len(success_tasks) - len(success_tasks_to_show)
+            # 检查是否超出剩余字符数
+            if current_length + line_length > available_chars:
+                break
+
+            displayed_success.insert(0, line)  # 插入到开头保持顺序
+            current_length += line_length
+
+        omitted_success_count = len(success_tasks) - len(displayed_success)
     else:
         omitted_success_count = len(success_tasks)
 
-    # 如果失败任务过多，也需要省略一部分
-    if len(displayed_failed) > available_lines - 2:  # 保留至少2行给成功任务或省略提示
-        # 显示最新的失败任务
-        kept_failed = displayed_failed[-(available_lines - 2):]
-        omitted_failed_count = len(displayed_failed) - len(kept_failed)
-        displayed_failed = kept_failed
-        displayed_success = []  # 失败太多，不显示成功的
-        omitted_success_count = len(success_tasks)
+    # 第三步：组装最终消息
+    message_parts = [header_text]
 
-    # 组装最终消息
+    # 添加失败任务省略提示
     if omitted_failed_count > 0:
-        message_lines.append(f"...此处省略 {omitted_failed_count} 条失败详情...")
+        message_parts.append(f"...此处省略 {omitted_failed_count} 条失败详情，下载完成后将发送完整错误日志TXT文件")
 
-    message_lines.extend(displayed_failed)
+    # 添加失败任务列表
+    if displayed_failed:
+        message_parts.extend(displayed_failed)
 
+    # 添加成功任务省略提示
     if omitted_success_count > 0 and displayed_success:
-        message_lines.append(f"...此处省略 {omitted_success_count} 条成功详情...")
+        message_parts.append(f"...此处省略 {omitted_success_count} 条成功详情...")
 
-    message_lines.extend(displayed_success)
+    # 添加成功任务列表
+    if displayed_success:
+        message_parts.extend(displayed_success)
 
-    return "\n".join(message_lines)
+    final_message = "\n".join(message_parts)
+
+    # 最终安全检查：如果仍然超出4096，强制截断
+    if len(final_message) > max_chars:
+        truncate_pos = max_chars - 50  # 预留空间添加截断提示
+        final_message = final_message[:truncate_pos] + "\n...(消息过长已截断)"
+
+    return final_message
+
+
+def generate_batch_summary_caption(custom_folder_name, batch_group_id, failed_count, success_count, total_count, created_at):
+    """
+    生成批量下载完成后的详细总结消息
+
+    Args:
+        custom_folder_name: 自定义文件夹名
+        batch_group_id: 批量任务组ID
+        failed_count: 失败任务数
+        success_count: 成功任务数（进度100的任务）
+        total_count: 总任务数
+        created_at: 任务创建时间（Unix时间戳）
+
+    Returns:
+        格式化的消息文本
+    """
+    from datetime import datetime
+    import time
+
+    # 当前时间
+    now = datetime.now()
+    current_timestamp = int(time.time())
+
+    # 计算任务持续时间
+    if created_at:
+        duration_seconds = current_timestamp - created_at
+    else:
+        duration_seconds = 0
+
+    # 格式化持续时间
+    def format_duration(seconds):
+        if seconds < 60:
+            return f"{seconds}秒"
+        elif seconds < 3600:
+            minutes = seconds // 60
+            return f"{minutes}分钟"
+        elif seconds < 86400:
+            hours = seconds // 3600
+            return f"{hours}小时"
+        else:
+            days = seconds // 86400
+            return f"{days}天"
+
+    duration_str = format_duration(duration_seconds)
+
+    # 格式化首次添加时间（转换为本地时区）
+    if created_at:
+        # 使用本地时区
+        created_time = datetime.fromtimestamp(created_at)
+        created_time_str = created_time.strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        created_time_str = "未知"
+
+    # 计算下次检查时间（10分钟后）
+    from app.core.batch_task_manager import calculate_next_retry_time
+    next_retry_timestamp = calculate_next_retry_time(0)
+    next_check_minutes = (next_retry_timestamp - current_timestamp) // 60
+
+    # 计算进行中的任务数（total - success - failed）
+    pending_count = total_count - success_count - failed_count
+
+    # 显示文件夹名
+    folder_display = custom_folder_name if custom_folder_name else "默认文件夹"
+
+    # 构建消息
+    caption_lines = [
+        f"📄 {folder_display} 的批量下载任务",
+        f"首次添加: {created_time_str}",
+        f"距首次添加已过: {duration_str}",
+        f"此为第 1 次尝试",
+        f"此次批量离线任务持续时间: {duration_str}",
+        "",
+        f"此次下载任务数量统计：",
+        f"败: {failed_count} / 续: {pending_count} / 完: {success_count}",
+        f"总 {total_count}",
+        "",
+        f"现在将重新添加失败的任务",
+        f"下次检查时间: {next_check_minutes}分钟后",
+        f"你也可[删除]该离线任务，无操作将继续尝试"
+    ]
+
+    return "\n".join(caption_lines)
+
+
+def generate_error_log_file(task_results, total_count, custom_folder_name="", batch_group_id=None):
+    """
+    生成批量下载错误日志TXT文件
+
+    Args:
+        task_results: 任务结果列表
+        total_count: 总任务数
+        custom_folder_name: 自定义文件夹名
+        batch_group_id: 批量任务组ID
+
+    Returns:
+        文件路径，如果没有失败任务则返回None
+    """
+    failed_tasks = [t for t in task_results if t.get("status") == "failed"]
+
+    if not failed_tasks:
+        return None
+
+    # 生成文件内容
+    from datetime import datetime
+    import tempfile
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # 使用自定义文件夹名或默认名称
+    if custom_folder_name:
+        filename = f"{custom_folder_name}_{timestamp}_errors.txt"
+    else:
+        filename = f"batch_download_errors_{timestamp}.txt"
+
+    # 按错误类型分组
+    error_groups = {}
+    for task in failed_tasks:
+        error_msg = "离线下载超时"  # 当前所有失败都是超时
+        if error_msg not in error_groups:
+            error_groups[error_msg] = []
+        error_groups[error_msg].append(task.get('link', '未知'))
+
+    # 构建简化的文本内容
+    lines = []
+    for error_type, links in error_groups.items():
+        lines.append(f"错误: {error_type}")
+        lines.append(f"状态: 已自动添加到重试列表")
+        for link in links:
+            lines.append(link)
+        lines.append("")  # 空行分隔
+
+    # 写入临时文件
+    file_path = f"/tmp/{filename}"
+    with open(file_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines))
+
+    return file_path
 
 
 def process_successful_download_silent(link, selected_path, user_id, resource_name, task_index, total_count):
@@ -870,20 +1224,45 @@ def download_tasks_batch(links, selected_path, user_id, custom_folder_name=""):
 def _download_tasks_batch_impl(links, selected_path, user_id, custom_folder_name=""):
     """批量下载任务的实际实现（内部函数）"""
     from app.utils.message_queue import add_task_to_queue
+    from app.core.batch_task_manager import (
+        generate_batch_folder_name,
+        create_batch_task_group,
+        save_batch_task_items,
+        update_task_item_status,
+        update_task_group_counts,
+        generate_magnet_txt_file
+    )
 
     total_count = len(links)
     init.logger.info(f"开始执行批量下载任务实现，共 {total_count} 个任务")
 
-    # 如果有自定义文件夹名且链接数>1,创建自定义文件夹
+    # === 批量任务管理 ===
+    batch_group_id = None
+    final_folder_name = custom_folder_name
+
+    # 如果是批量任务（>1个链接），创建批量任务记录
+    if total_count > 1:
+        # 如果没有自定义文件夹名，生成默认名称
+        if not custom_folder_name:
+            final_folder_name = generate_batch_folder_name(total_count)
+            init.logger.info(f"🎯 生成默认批量任务文件夹名: {final_folder_name}")
+
+        # 创建批量任务组
+        batch_group_id = create_batch_task_group(final_folder_name, selected_path, total_count)
+
+        # 保存批量任务项
+        save_batch_task_items(batch_group_id, links)
+
+    # 如果有文件夹名且链接数>1,创建文件夹
     actual_download_path = selected_path
-    if custom_folder_name and total_count > 1:
-        # 在选择的路径下创建自定义文件夹
+    if final_folder_name and total_count > 1:
+        # 在选择的路径下创建文件夹
         try:
-            init.openapi_115.create_dir_for_file(selected_path, custom_folder_name)
-            actual_download_path = f"{selected_path}/{custom_folder_name}"
-            init.logger.info(f"创建自定义文件夹: {actual_download_path}")
+            init.openapi_115.create_dir_for_file(selected_path, final_folder_name)
+            actual_download_path = f"{selected_path}/{final_folder_name}"
+            init.logger.info(f"创建批量任务文件夹: {actual_download_path}")
         except Exception as e:
-            init.logger.error(f"创建自定义文件夹失败: {e}")
+            init.logger.error(f"创建文件夹失败: {e}")
             # 如果创建失败,使用原路径
             actual_download_path = selected_path
 
@@ -1163,6 +1542,9 @@ def _download_tasks_batch_impl(links, selected_path, user_id, custom_folder_name
     except Exception as e:
         init.logger.warn(f"获取下载目录文件列表失败: {e}")
 
+    # 收集失败的任务链接，稍后批量清理（避免在循环中重复调用 get_offline_tasks）
+    failed_task_links = []
+
     for task_info in submitted_tasks:
         if not task_info["submitted"]:
             continue
@@ -1246,11 +1628,25 @@ def _download_tasks_batch_impl(links, selected_path, user_id, custom_folder_name
                 "name": resource_name,
                 "link": link
             })
+
+            # 如果是批量任务，更新批量任务状态
+            if batch_group_id:
+                from app.core.batch_task_manager import update_task_item_status
+                update_task_item_status(link, batch_group_id, 'success', resource_name)
         else:
             # 失败的任务直接添加到重试列表
             title = resource_name if resource_name else f"未知资源_{task_index}"
-            save_failed_download_to_db(title, link, actual_download_path)
-            init.openapi_115.clear_failed_task(link)
+
+            # 如果是批量任务，更新批量任务状态（标记为failed，等待自动重试）
+            if batch_group_id:
+                from app.core.batch_task_manager import update_task_item_status
+                update_task_item_status(link, batch_group_id, 'failed', resource_name)
+            else:
+                # 非批量任务，添加到旧的重试列表
+                save_failed_download_to_db(title, link, actual_download_path)
+
+            # 收集失败任务的链接，稍后批量清理
+            failed_task_links.append(link)
             init.logger.info(f"{progress_info} 已添加到重试列表")
 
             # 记录失败结果
@@ -1282,6 +1678,47 @@ def _download_tasks_batch_impl(links, selected_path, user_id, custom_folder_name
                 init.logger.info(f"已更新进度消息 ({len(task_results)}/{len(submitted_tasks)})")
             except Exception as e:
                 init.logger.warn(f"更新进度消息失败: {e}")
+
+    # 第一阶段结束：批量清理所有失败的任务（避免在循环中重复调用 API）
+    # 收集所有成功任务的链接，用于后续清理
+    successful_task_links = [d["link"] for d in successful_downloads]
+
+    if failed_task_links or (all_completed and successful_task_links):
+        cleanup_links = []
+        if failed_task_links:
+            cleanup_links.extend(failed_task_links)
+            init.logger.info(f"准备清理 {len(failed_task_links)} 个失败任务")
+        if all_completed and successful_task_links:
+            cleanup_links.extend(successful_task_links)
+            init.logger.info(f"所有任务已完成，准备清理 {len(successful_task_links)} 个成功任务")
+
+        if cleanup_links:
+            init.logger.info(f"开始批量清理 {len(cleanup_links)} 个离线任务...")
+            try:
+                # 只获取一次离线任务列表
+                offline_tasks_for_cleanup = init.openapi_115.get_offline_tasks()
+                if offline_tasks_for_cleanup:
+                    cleaned_count = 0
+                    failed_link_set = set(failed_task_links)
+                    # 为每个需要清理的链接找到对应的 info_hash 并删除
+                    for link in cleanup_links:
+                        for task in offline_tasks_for_cleanup:
+                            if isinstance(task, dict) and task.get('url') == link:
+                                info_hash = task.get('info_hash', '')
+                                if info_hash:
+                                    delete_source = link in failed_link_set
+                                    init.openapi_115.del_faild_offline_task(info_hash, delete_source_file=delete_source)
+                                    cleaned_count += 1
+                                    init.logger.debug(f"已清理任务: {link[:50]}...")
+                                break
+                    init.logger.info(f"批量清理完成，共清理 {cleaned_count}/{len(cleanup_links)} 个离线任务")
+                else:
+                    init.logger.warn("获取离线任务列表失败，跳过批量清理")
+            except Exception as e:
+                init.logger.error(f"批量清理离线任务时出错: {e}")
+    else:
+        if not all_completed:
+            init.logger.info(f"仍有任务未完成，保留所有离线任务记录（包括 {len(successful_task_links)} 个成功任务）")
 
     # 第二阶段：批量处理所有成功下载的文件（优化版）
     init.logger.info(f"第二阶段：开始批量处理 {len(successful_downloads)} 个成功下载的文件...")
@@ -1350,8 +1787,7 @@ def _download_tasks_batch_impl(links, selected_path, user_id, custom_folder_name
                 init.logger.error(f"{progress_info} 处理文件失败: {e}")
                 final_resource_names.append(resource_name)
 
-    # 第五步：清除云端任务（批量清理一次）
-    init.openapi_115.clear_cloud_task()
+    # 第五步：离线任务已在第一阶段逐个清理（仅清理当前批量任务相关的任务）
     init.logger.info(f"批量下载任务处理完成，共 {total_count} 个任务")
 
     # 批量下载完成后，统一通知 Emby 扫库一次（而不是每个文件都通知）
@@ -1359,26 +1795,93 @@ def _download_tasks_batch_impl(links, selected_path, user_id, custom_folder_name
         notice_emby_scan_library()
         init.logger.info("已通知 Emby 扫库（批量下载完成）")
 
-    # 第六步：如果有多个成功下载,提示"移动到"功能（无论是否已有自定义文件夹）
-    if total_count > 1 and len(final_resource_names) > 0:
-        # 保存批量下载信息,用于后续移动操作
-        batch_id = str(int(time.time() * 1000))
-        if not hasattr(init, 'batch_downloads'):
-            init.batch_downloads = {}
+    # === 批量任务后处理 ===
+    if batch_group_id:
+        # 更新批量任务组统计
+        from app.core.batch_task_manager import update_task_group_counts, generate_magnet_txt_file
+        update_task_group_counts(batch_group_id)
+        init.logger.info(f"✅ 批量任务组 {batch_group_id} 统计已更新")
 
-        init.batch_downloads[batch_id] = {
-            "download_path": actual_download_path,
-            "resource_names": final_resource_names,
-            "user_id": user_id
-        }
+        # 生成磁力链接TXT文件
+        try:
+            txt_success = generate_magnet_txt_file(batch_group_id, actual_download_path, final_folder_name)
+            if txt_success:
+                init.logger.info(f"📄 批量任务磁力链接TXT文件已生成")
+            else:
+                init.logger.warn(f"⚠️ 批量任务磁力链接TXT文件生成失败")
+        except Exception as e:
+            init.logger.error(f"❌ 生成磁力链接TXT文件异常: {e}")
 
-        # 提示用户可以使用"移动到"功能
-        if custom_folder_name:
-            # 如果已经有自定义文件夹，提示可以进一步移动
-            message = f"✅ 批量下载完成！共 {len(final_resource_names)}/{total_count} 个任务成功\n\n📁 已保存到: `{custom_folder_name}`\n\n💡 如需进一步移动文件，请回复：\n`移动到[新文件夹名]`"
+    # 第六步：如果有失败任务超过5个，发送错误日志TXT文件
+    failed_count = len([t for t in task_results if t.get("status") == "failed"])
+    success_count = len([t for t in task_results if t.get("status") == "success"])
+
+    if failed_count > 5:
+        try:
+            error_log_path = generate_error_log_file(task_results, total_count, custom_folder_name, batch_group_id)
+            if error_log_path:
+                # 获取批量任务组信息以获取创建时间
+                created_at = None
+                if batch_group_id:
+                    from app.core.batch_task_manager import get_batch_task_group_info
+                    group_info = get_batch_task_group_info(batch_group_id)
+                    if group_info and 'created_at' in group_info:
+                        # 直接使用数据库的整数时间戳
+                        try:
+                            created_at = int(group_info['created_at'])
+                        except Exception as e:
+                            init.logger.warn(f"无法解析创建时间: {group_info['created_at']}, 错误: {e}")
+                            created_at = None
+
+                # 生成优化后的消息
+                caption = generate_batch_summary_caption(
+                    custom_folder_name or final_folder_name,
+                    batch_group_id,
+                    failed_count,
+                    success_count,
+                    total_count,
+                    created_at
+                )
+
+                import asyncio
+                from telegram import Bot
+                bot = Bot(token=init.get_bot_token())
+
+                import nest_asyncio
+                nest_asyncio.apply()
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+
+                with open(error_log_path, 'rb') as f:
+                    loop.run_until_complete(
+                        bot.send_document(
+                            chat_id=user_id,
+                            document=f,
+                            caption=caption
+                        )
+                    )
+                loop.close()
+
+                # 删除临时文件
+                import os
+                os.remove(error_log_path)
+                init.logger.info(f"已发送错误日志文件（{failed_count}个失败任务）")
+        except Exception as e:
+            init.logger.error(f"发送错误日志文件失败: {e}")
+
+    # 第七步：发送下载完成通知
+    if len(final_resource_names) > 0:
+        # 发送完成通知（不再提示"移动到"功能）
+        if total_count > 1:
+            # 批量下载
+            if custom_folder_name:
+                message = f"✅ 批量下载完成！共 {len(final_resource_names)}/{total_count} 个任务成功\n\n📁 已保存到: `{custom_folder_name}`"
+            else:
+                message = f"✅ 批量下载完成！共 {len(final_resource_names)}/{total_count} 个任务成功"
         else:
-            # 如果没有自定义文件夹，提示可以移动
-            message = f"✅ 批量下载完成！共 {len(final_resource_names)}/{total_count} 个任务成功\n\n💡 如需批量移动文件，请回复：\n`移动到[自定义文件夹名]`"
+            # 单次下载
+            resource_name = final_resource_names[0] if final_resource_names else "未知资源"
+            message = f"✅ 下载完成！\n\n📁 文件名: `{resource_name}`"
         add_task_to_queue(user_id, None, message=message)
 
 
@@ -1490,7 +1993,9 @@ def download_task(link, selected_path, user_id, task_index=1, total_tasks=1):
         user_error_msg = f"❌ {progress_info} 下载任务执行出错: {str(e)}" if progress_info else f"❌ 下载任务执行出错: {str(e)}"
         add_task_to_queue(user_id, f"{init.IMAGE_PATH}/male023.png", message=user_error_msg)
     finally:
-        # 清除云端任务，避免重复下载
+        # ⚠️ 注意：此函数已弃用，使用 clear_cloud_task() 会清空所有离线任务
+        # 建议：应该只清理当前任务（通过 del_faild_offline_task + info_hash）
+        # 保留此调用以保持向后兼容，但不推荐使用此函数
         init.openapi_115.clear_cloud_task()
 
 
@@ -1523,7 +2028,11 @@ async def handle_manual_rename_callback(update: Update, context: ContextTypes.DE
 
 
 async def handle_batch_move(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """处理批量移动文件命令: 移动到[文件夹名]"""
+    """
+    处理批量移动文件命令: 移动到[文件夹名]
+
+    ⚠️ 已废弃：此功能不再使用，保留代码仅供参考
+    """
     message_text = update.message.text.strip()
     user_id = update.effective_user.id
 
@@ -1531,8 +2040,8 @@ async def handle_batch_move(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not message_text.startswith("移动到"):
         return
 
-    # 提取文件夹名
-    folder_match = re.match(r'移动到\[(.+?)\]', message_text)
+    # 提取文件夹名（支持中英文方括号）
+    folder_match = re.match(r'移动到[\[\【\［](.+?)[\]\】\］]', message_text)
     if not folder_match:
         await update.message.reply_text("⚠️ 格式错误！请使用: 移动到[文件夹名]")
         return
@@ -1606,15 +2115,166 @@ async def handle_batch_move(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ 批量移动失败: {str(e)}")
 
 
-async def handle_manual_rename(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """处理手动重命名（通过独立的消息处理器）"""
-    # 先检查是否是"移动到"命令
-    message_text = update.message.text.strip()
-    if message_text.startswith("移动到"):
-        await handle_batch_move(update, context)
+async def handle_txt_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理用户发送的 txt 文件"""
+    usr_id = update.message.from_user.id
+    if not init.check_user(usr_id):
+        await update.message.reply_text("⚠️ 对不起，您无权使用115机器人！")
         return
 
+    document = update.message.document
+
+    # 检查文件类型
+    if not document.file_name.endswith('.txt'):
+        return
+
+    # 检查文件大小（500KB = 512000 bytes）
+    if document.file_size > 512000:
+        await update.message.reply_text("⚠️ txt 文件大于 500KB，已忽略！")
+        return
+
+    try:
+        # 下载文件
+        file = await context.bot.get_file(document.file_id)
+        file_content_bytes = await file.download_as_bytearray()
+
+        # 尝试多种编码解码文件内容
+        file_content = None
+        for encoding in ['utf-8', 'gbk', 'gb2312', 'utf-16']:
+            try:
+                file_content = file_content_bytes.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+
+        if not file_content:
+            await update.message.reply_text("⚠️ 无法解析 txt 文件编码，请检查文件格式！")
+            return
+
+        # 提取文件名（不含扩展名）
+        file_base_name = document.file_name.rsplit('.txt', 1)[0]
+
+        # 按照粘贴磁力文件的逻辑解析链接（使用统一的链接提取函数）
+        lines = file_content.split('\n')
+        valid_links = extract_links_from_lines(lines)
+
+        # 检查是否有有效链接
+        if not valid_links:
+            await update.message.reply_text("⚠️ txt 文件中未找到有效的下载链接！")
+            return
+
+        init.logger.info(f"从 txt 文件 {document.file_name} 中提取到 {len(valid_links)} 个有效链接")
+
+        # 构建自定义文件夹名称
+        custom_folder_name = ""
+
+        # 提取内容首行（非链接）- 使用统一的链接检测函数
+        first_non_link_line = ""
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            # 使用统一的链接检测函数（支持带前缀的链接）
+            if not line_contains_link(line):
+                first_non_link_line = line
+                break
+
+        # 组合文件夹名：文件名 + 首行内容（如果存在）
+        if first_non_link_line:
+            custom_folder_name = f"{file_base_name}{first_non_link_line}"
+        else:
+            # 如果没有首行内容，检查文件名长度
+            if len(file_base_name) < 8:
+                # 文件名不足8个字符，添加时间戳
+                from datetime import datetime
+                timestamp = datetime.now().strftime("%Y%m%d%H%M")
+                custom_folder_name = f"{file_base_name}{timestamp}"
+            else:
+                custom_folder_name = file_base_name
+
+        # 清理文件夹名
+        custom_folder_name = sanitize_folder_name(custom_folder_name)
+
+        # 保存到 context
+        context.user_data["links"] = valid_links
+        context.user_data["custom_folder_name"] = custom_folder_name
+        context.user_data["total_links"] = len(valid_links)
+
+        init.logger.info(f"txt 文件提取的自定义文件夹名: {custom_folder_name}")
+
+        user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
+
+        last_save_path = get_user_last_save_path(user_id)
+        if last_save_path:
+            auto_note = "🤖 已自动使用上次的保存路径，发送 /reset_save_path 可重新选择。"
+            await finalize_download_submission(
+                context,
+                user_id,
+                last_save_path,
+                custom_folder_name,
+                chat_id=chat_id,
+                auto_note=auto_note
+            )
+            return
+
+        # 构建分类选择键盘
+        keyboard = [
+            [InlineKeyboardButton(f"📁 {category['display_name']}", callback_data=category['name'])]
+            for category in init.bot_config['category_folder']
+        ]
+
+        keyboard.append([InlineKeyboardButton("取消", callback_data="cancel")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        # 发送选择消息
+        link_count = len(valid_links)
+
+        # 获取配额信息
+        quota_info_text = ""
+        quota_warning = ""
+        try:
+            quota_info = init.openapi_115.get_quota_info()
+            if quota_info:
+                total_quota = quota_info.get('count', 0)
+                used_quota = quota_info.get('used', 0)
+                remaining_quota = total_quota - used_quota
+                quota_info_text = f"\n💾 本月配额还剩 {remaining_quota}/{total_quota} 个。即将消耗 {link_count} 个下载配额。"
+
+                if remaining_quota < link_count:
+                    quota_warning = "\n⚠️ 配额不足以完成此次任务，可能无法完成所有下载。"
+        except Exception as e:
+            init.logger.warn(f"获取配额信息失败: {e}")
+
+        # 提取文件夹名（用于显示）
+        folder_hint = f"\n📁 即将下载至: 选择的文件夹/[{custom_folder_name}]"
+
+        message_text = f"📄 从 txt 文件检测到 {link_count} 个下载链接{folder_hint}{quota_info_text}{quota_warning}\n\n❓请选择要保存到哪个分类："
+
+        await update.message.reply_text(
+            text=message_text,
+            reply_markup=reply_markup
+        )
+
+    except Exception as e:
+        init.logger.error(f"处理 txt 文件失败: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ 处理 txt 文件时出错: {str(e)}")
+
+
+async def handle_manual_rename(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理手动重命名（通过独立的消息处理器）"""
+    # 检查消息是否存在文本内容
+    if not update.message or not update.message.text:
+        return
+
+    # ⚠️ 已废弃：不再处理"移动到"命令
+    # message_text = update.message.text.strip()
+    # if message_text.startswith("移动到"):
+    #     await handle_batch_move(update, context)
+    #     return
+
     # 检查用户是否有待处理的重命名数据
+    message_text = update.message.text.strip()
     rename_data = context.user_data.get("rename_data")
     if not rename_data:
         return
@@ -1755,6 +2415,9 @@ async def push2aria2(new_final_path, cover_url, message, update, context):
 
 
 def register_download_handlers(application):
+    # 允许用户手动重置保存目录
+    application.add_handler(CommandHandler("reset_save_path", reset_save_path_command))
+
     # 命令形式的下载交互
     download_command_handler = ConversationHandler(
         # entry_points=[CommandHandler("dl", start_d_command)],
@@ -1771,6 +2434,12 @@ def register_download_handlers(application):
         fallbacks=[CommandHandler("q", quit_conversation)],
     )
     application.add_handler(download_command_handler)
+
+    # 添加 txt 文件处理器（优先级最高，group=-1）
+    application.add_handler(MessageHandler(
+        filters.Document.TXT,
+        handle_txt_file
+    ), group=-1)
 
     # 添加全局分类选择处理器（支持定时器触发的消息）
     # 使用 group=0 确保它与 ConversationHandler 并行处理
