@@ -1,8 +1,14 @@
 
 
 # 修改点：
-- [x] 支持 多个磁力 批量添加离线任务
-- [x] 批量下载 时候，识别文本 将【首行+尾行文字】 指定为文件夹
+- [x] 支持多用户配置（`allowed_user` 支持单个用户 ID 或用户 ID 列表）
+- [x] 支持多个磁力 / ed2k / 迅雷链接批量添加离线任务，支持短时间多条消息自动合并（`msgs_merge_interval`）
+- [x] 支持上传 `.txt` 文件统一提取链接并批量离线下载
+- [x] 批量下载时自动识别文本【首行 + 尾行文字】作为文件夹名，下载完成后支持 `移动到[文件夹名]` 批量整理
+- [x] 新增批量任务 SQLite 持久化与失败任务定时重试，重复离线任务（`code 10008`）自动删除记录并重提
+- [x] 115 API 增加线程安全速率限制（1 req/s）与分批删除（每批 100 条 + 失败重试）
+- [x] 优化本地启动与 115 授权容错：自动补齐 `app` 子模块路径；115 Token 过期/解除授权时降级运行不崩溃，支持直接发 `/auth` 扫码重授权（并修复扫码等待阶段 `status` 判空异常）
+- [x] 移植上游 Telegram 连接稳定性优化：`HTTPXRequest` 显式代理与 keep-alive 回收防 502、`concurrent_updates(4)`、`allowed_updates=Update.ALL_TYPES` 防按钮无响应、全局错误与原始回调日志
 ---------------------
 # 以下为原 版本的README 说明 
 <div align="center">
@@ -115,14 +121,33 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
+> 若系统缺少 `python3-venv` / `ensurepip`（如精简版 Debian 13），可用 `--without-pip` 建环境后通过 `get-pip.py` 安装 `pip`：
+> ```bash
+> rm -rf .venv && python3 -m venv --without-pip .venv
+> curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
+> .venv/bin/python /tmp/get-pip.py && rm -f /tmp/get-pip.py
+> .venv/bin/pip install -r requirements.txt
+> ```
+> 若宿主机升级过 Python 主版本（如 3.9 → 3.13）导致旧 `.venv` 报 `ModuleNotFoundError`，删除 `.venv` 按上述命令重建即可。
+
 ### 2. 准备配置文件
 ```bash
 cp config/config.yaml.example config/config.yaml
-# 按需填写 bot_token、allowed_user、115_app_id 等配置（切勿提交 config/config.yaml 等敏感文件）
 ```
+按需填写 `bot_token`、`allowed_user`、`115_app_id` 等字段：
+- 调试建议将 `log_level` 设为 `debug`（日志会同时输出到终端与 `config/115bot.log`）。
+- 如需大视频上传功能，注意字段名为 `bot_name`（不是 `bote_name`），并按上文生成 `config/user_session.session`。
+- 切勿提交 `config/config.yaml`、`config/115_tokens.json`、`config/*.db`、`app/images/qrcode.png`、`*.log` 等敏感/运行期文件（已加入 `.gitignore`）。
 
-### 3. 前台启动与代理配置
-项目启动时已自动补齐 `app` 及子模块路径，直接运行即可；若服务器无法直连 Telegram API，请配置代理环境变量，并将 115 域名加入 `NO_PROXY`：
+### 3. 代理连通性自检（如服务器无法直连 Telegram）
+先用 3 秒快速确认本地代理（如 mihomo）可访问 Telegram Bot API：
+```bash
+curl -I --max-time 5 -x http://127.0.0.1:<代理端口> https://api.telegram.org
+```
+看到返回 HTTP 状态码即表示代理正常；可直连 Telegram 的机器可跳过代理配置。
+
+### 4. 前台启动调试
+项目启动时已自动将 `app`、`app/core`、`app/utils`、`app/handlers` 加入 `sys.path`，无需手动拼接 `PYTHONPATH`。建议将 115 域名加入 `NO_PROXY` 走直连：
 ```bash
 export HTTP_PROXY="http://127.0.0.1:<代理端口>"
 export HTTPS_PROXY="http://127.0.0.1:<代理端口>"
@@ -130,11 +155,29 @@ export NO_PROXY="localhost,127.0.0.1,::1,proapi.115.com,passportapi.115.com,qrco
 
 .venv/bin/python app/115bot.py
 ```
+按 `Ctrl+C` 即可随时停止。
 
-### 4. 日志排查与重新授权
-- 启动前可先用 `curl -I --max-time 5 -x http://127.0.0.1:<代理端口> https://api.telegram.org` 验证代理连通性。
-- 实时查看日志：`tail -f config/115bot.log`。
-- 若 115 授权过期或被解除，机器人会降级继续运行，在 Telegram 发送 `/auth` 重新扫码授权即可恢复。
+### 5. 启动验收与 Telegram 实测
+观察终端日志依次出现以下信息即说明启动正常：
+1. `✅ Auth处理器已注册` 等全部 9 个处理器注册完成
+2. `Scheduler started`（定时任务调度器启动）
+3. `Bot菜单命令已设置!`（Telegram Bot API 连通正常，无 `Timed out`）
+
+随后在 Telegram 中向机器人发送命令验证：
+- 发送 `/start`：确认能正常收到使用手册回复；
+- 若日志提示 115 Token 过期或授权已解除（如 `40140116`），机器人会自动降级保持在线，直接发送 `/auth` 接收二维码并用 115 App 扫码完成重新授权，重启后即可正常显示空间与配额欢迎消息。
+
+### 6. 日志追踪、断点调试与单元测试
+- **实时查看日志文件**：另开终端执行 `tail -f config/115bot.log`。
+- **终端断点调试**：在目标代码行插入 `breakpoint()`，前台运行 `.venv/bin/python app/115bot.py` 即可进入交互式 `pdb`。
+- **VS Code / code-server 调试**：将 Python 解释器选为 `.venv/bin/python`，直接调试 `app/115bot.py` 并在 `launch.json` 的 `env` 中配置上述代理变量。
+- **运行本地单元测试**（无需真实凭证与网络）：
+  ```bash
+  .venv/bin/python -m compileall -q app
+  .venv/bin/python test_startup_token_handling.py
+  .venv/bin/python test_rate_limiter_simple.py
+  .venv/bin/python test_folder_extraction.py
+  ```
 
 ## 许可证
 ```
