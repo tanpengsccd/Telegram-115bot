@@ -162,6 +162,27 @@ def test_build_bot_request_uses_proxy_env():
         assert req_direct is not None
 
 
+def test_txt_handler_not_shadowed_by_raw_update_logger():
+    import importlib.util
+    from telegram import Update
+    from telegram.ext import Application, TypeHandler
+    from app.handlers.download_handler import register_download_handlers, handle_txt_file
+
+    spec = importlib.util.spec_from_file_location("bot_entry_group_check", os.path.join(APP_DIR, "115bot.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    app = Application.builder().token("123456:TESTTOKEN").build()
+    app.add_handler(TypeHandler(Update, mod.log_raw_update), group=-100)
+    register_download_handlers(app)
+
+    # Confirm log_raw_update and handle_txt_file are in distinct handler groups
+    raw_groups = [g for g, hs in app.handlers.items() if any(getattr(h, "callback", None) is mod.log_raw_update for h in hs)]
+    txt_groups = [g for g, hs in app.handlers.items() if any(getattr(h, "callback", None) is handle_txt_file for h in hs)]
+    assert raw_groups == [-100], f"Unexpected raw logger groups: {raw_groups}"
+    assert txt_groups == [-1], f"Unexpected txt handler groups: {txt_groups}"
+
+
 if __name__ == "__main__":
     test_refresh_access_token_handles_empty_data_error_response()
     test_get_user_info_returns_none_when_token_refresh_fails()
@@ -171,4 +192,5 @@ if __name__ == "__main__":
     test_batch_delete_files_deduplicates_and_chunks()
     test_auth_pkce_waits_when_qr_status_missing()
     test_build_bot_request_uses_proxy_env()
+    test_txt_handler_not_shadowed_by_raw_update_logger()
     print("All startup token handling tests passed!")

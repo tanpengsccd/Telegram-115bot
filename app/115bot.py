@@ -14,16 +14,22 @@ from telegram.helpers import escape_markdown
 import init
 
 from app.utils.message_queue import add_task_to_queue, queue_worker
+from app.utils.reaction import REACTION_PROCESSING, REACTION_ERROR, set_message_reaction_safe
+from app.handlers.menu_handler import (
+    register_menu_handlers,
+    register_fallback_handlers,
+    build_help_text,
+    send_panel_result,
+    refresh_bottom_panel_if_exists,
+)
 from app.handlers.auth_handler import register_auth_handlers
 from app.handlers.download_handler import register_download_handlers
 from app.handlers.sync_handler import register_sync_handlers
 from app.handlers.video_handler import register_video_handlers
 from app.core.scheduler import start_scheduler_in_thread
-from app.handlers.subscribe_movie_handler import register_subscribe_movie_handlers
 from app.handlers.av_download_handler import register_av_download_handlers
 from app.handlers.offline_task_handler import register_offline_task_handlers
 from app.handlers.aria2_handler import register_aria2_handlers
-from app.handlers.crawl_handler import register_crawl_handlers
 
 
 def get_version(md_format=False):
@@ -32,59 +38,9 @@ def get_version(md_format=False):
         return escape_markdown(version, version=2)
     return version
 
-def get_help_info():
-    version = get_version()
-    help_info = f"""
-<b>🍿 Telegram-115Bot {version} 使用手册</b>\n\n
-<b>🔧 命令列表</b>\n
-<code>/start</code> - 显示帮助信息\n
-<code>/auth</code> - <i>115扫码授权 (解除授权后使用)</i>\n
-<code>/reload</code> - <i>重载配置</i>\n
-<code>/rl</code> - 查看重试列表\n
-<code>/av</code> - <i>下载番号资源 (自动匹配磁力)</i>\n
-<code>/csh</code> - <i>手动爬取涩花数据</i>\n
-<code>/cjav</code> - <i>手动爬取javbee数据</i>\n
-<code>/sm</code> - 订阅电影\n
-<code>/sync</code> - 同步目录并创建软链\n
-<code>/q</code> - 取消当前会话\n\n
-<b>✨ 功能说明</b>\n
-<u>电影下载：</u>
-• 直接输入下载链接，支持磁力/ed2k/迅雷
-• 离线超时可选择添加到重试列表
-• 根据配置自动生成 <code>.strm</code> 软链文件\n
-<u>重试列表：</u>
-• 输入 <code>"/rl"</code>
-• 查看当前重试列表，可根据需要选择是否清空\n
-<u>AV下载：</u>
-• 输入 <code>"/av 番号"</code>
-• 自动检索磁力并离线,默认不生成软链（建议使用削刮工具生成软链）\n
-<u>手动爬取涩花：</u>
-• 输入 <code>"/csh"</code>
-• 基于版块配置，爬取涩花当天数据！\n
-<u>手动爬取javbee：</u>
-• 输入 <code>"/cjav yyyymmdd"</code>
-• 日期格式为 <code>yyyymmdd</code>，例如：20250808
-• 留空则默认爬取当天数据\n
-<u>电影订阅：</u>
-• 输入 <code>"/sm 电影名称"</code>
-• 自动监控资源更新, 发现更新后自动下载\n
-<u>目录同步：</u>
-• 输入 <code>"/sync"</code>
-• 选择目录后会在对应的目录创建strm软链\n
-<u>视频下载：</u>
-• 直接转发视频给机器人，选择保存目录即可保存到115
-"""
-    return help_info
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_info = get_help_info()
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=help_info, parse_mode="html", disable_web_page_preview=True)
-    
-async def reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    init.load_yaml_config()
-    init.logger.info("Reload configuration success:")
-    init.logger.info(json.dumps(init.bot_config))
-    await context.bot.send_message(chat_id=update.effective_chat.id, text="🔁重载配置完成！", parse_mode="html")
+def get_help_info():
+    return build_help_text()
 
 def start_async_loop():
     """启动异步事件循环的线程"""
@@ -142,17 +98,22 @@ def update_logger_level():
     logging.getLogger('telegram.Bot').setLevel(logging.WARNING)
     
 def get_bot_menu():
-    return  [
-        BotCommand("start", "获取帮助信息"),
+    return [
+        BotCommand("start", "打开主控面板"),
+        BotCommand("status", "查看账号、配额、容量与目录"),
+        BotCommand("tasks", "查看任务队列与磁力明细"),
+        BotCommand("cloud_tasks", "管理115官方云端磁力任务"),
+        BotCommand("log", "获取机器人运行日志文件"),
+        BotCommand("minimal", "切换对话极简模式"),
+        BotCommand("help", "完整使用说明"),
+        BotCommand("rl", "查看重试列表"),
+        BotCommand("reset_save_path", "重置记住的默认保存目录"),
         BotCommand("auth", "115扫码授权"),
         BotCommand("reload", "重载配置"),
-        BotCommand("rl", "查看重试列表"),
         BotCommand("av", "指定番号下载"),
-        BotCommand("csh", "手动爬取涩花数据"),
-        BotCommand("cjav", "手动爬取javbee数据"),
-        BotCommand("sm", "订阅电影"),
         BotCommand("sync", "同步指定目录，并创建软链"),
-        BotCommand("q", "退出当前会话")]
+        BotCommand("q", "退出当前会话"),
+    ]
     
 
 async def set_bot_menu(application):
@@ -169,20 +130,57 @@ async def post_init(application):
 
 
 async def on_error(update, context: ContextTypes.DEFAULT_TYPE):
-    """全局错误处理器，避免异常仅被静默记录而无法感知问题"""
+    """全局错误处理器：记录堆栈并向触发用户反馈失败原因，避免静默无响应"""
+    import html
     import traceback
     error_details = "".join(traceback.format_exception(None, context.error, context.error.__traceback__))
     init.logger.error(f"处理更新时发生异常: {context.error}\n{error_details}")
 
+    try:
+        if update and getattr(update, "effective_chat", None) and getattr(update, "effective_user", None):
+            if init.check_user(update.effective_user.id):
+                chat_id = update.effective_chat.id
+                err_text = html.escape(str(context.error)[:300])
+                await send_panel_result(context.bot, chat_id, f"❌ 执行失败：<code>{err_text}</code>")
+                await refresh_bottom_panel_if_exists(context.bot, chat_id)
+                if getattr(update, "message", None):
+                    await set_message_reaction_safe(context.bot, chat_id, update.message.message_id, REACTION_ERROR)
+    except Exception as notify_err:
+        init.logger.debug(f"发送异常反馈消息失败: {notify_err}")
+
 
 async def log_raw_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """最先执行的原始更新日志，用于确认Telegram是否把按钮回调投递给了机器人"""
+    """最先执行的原始更新日志，用于确认Telegram是否把消息/按钮回调投递给了机器人"""
     if update.callback_query:
         init.logger.info(
             f"[RAW UPDATE] callback_query: data={update.callback_query.data!r}, "
             f"chat_id={update.effective_chat.id if update.effective_chat else None}, "
             f"user_id={update.effective_user.id if update.effective_user else None}"
         )
+    elif update.message:
+        msg = update.message
+        init.logger.info(
+            f"[RAW UPDATE] message: msg_id={msg.message_id}, "
+            f"user_id={update.effective_user.id if update.effective_user else None}, "
+            f"text_len={len(msg.text) if msg.text else 0}, "
+            f"caption_len={len(msg.caption) if msg.caption else 0}, "
+            f"has_doc={bool(msg.document)}, has_photo={bool(msg.photo)}, has_video={bool(msg.video)}, "
+            f"forwarded={bool(msg.forward_origin)}"
+        )
+
+
+async def react_on_incoming_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """收到授权用户发送的文本消息或文件时，立即添加 👀 表情回应表示已收到正在处理"""
+    if not update.message or not update.effective_user:
+        return
+    if not init.check_user(update.effective_user.id):
+        return
+    await set_message_reaction_safe(
+        context.bot,
+        update.effective_chat.id,
+        update.message.message_id,
+        REACTION_PROCESSING,
+    )
 
 
 def build_bot_request():
@@ -234,14 +232,12 @@ if __name__ == '__main__':
         .build()
     )
     application.add_error_handler(on_error)
-    application.add_handler(TypeHandler(Update, log_raw_update), group=-1)
+    # 使用独立的低优先级编号组(-100 / -99)，避免吞掉 group=-1 中的 TXT 文件等业务处理器
+    application.add_handler(TypeHandler(Update, log_raw_update), group=-100)
+    application.add_handler(TypeHandler(Update, react_on_incoming_message), group=-99)
 
-    # 启动帮助
-    start_handler = CommandHandler('start', start)
-    application.add_handler(start_handler)
-    # 重载配置
-    reload_handler = CommandHandler('reload', reload)
-    application.add_handler(reload_handler)
+    # 注册主控面板、状态、任务、帮助与重载命令（必须在 download_handler 全局回调之前注册）
+    register_menu_handlers(application)
     
     # 初始化115open对象
     is_115_ready = init.initialize_115open()
@@ -271,27 +267,25 @@ if __name__ == '__main__':
     register_auth_handlers(application)
     # 注册下载
     register_download_handlers(application)
-    # 注册电影订阅 
-    register_subscribe_movie_handlers(application)
     # 注册AV下载
     register_av_download_handlers(application)
     # 注册离线任务
     register_offline_task_handlers(application)
     # 注册Aria2
     register_aria2_handlers(application)
-    # 手动爬虫
-    register_crawl_handlers(application)
     # 注册同步
     register_sync_handlers(application)
     # 注册视频
     register_video_handlers(application)
+    # 最后注册全局兜底处理器，确保任何无法识别的消息或文件都有明确反馈
+    register_fallback_handlers(application)
 
     # 启动机器人轮询
     try:
-        # 启动订阅线程
+        # 启动定时任务线程
         start_scheduler_in_thread()
-        init.logger.info("订阅线程启动成功！")
-        time.sleep(3)  # 等待订阅线程启动
+        init.logger.info("定时任务线程启动成功！")
+        time.sleep(3)  # 等待定时任务线程启动
         if is_115_ready:
             send_start_message()
         # 显式声明接收所有更新类型，避免callback_query等更新被服务端静默丢弃

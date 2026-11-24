@@ -1,461 +1,313 @@
 # -*- coding: utf-8 -*-
 
 """
-批量任务重试模块
-负责自动检查并重试失败的批量任务
+任务自动重试模块（2 倍指数退避）
+
+规则：
+- 对话内第 1 次尝试最多等待到「10 分钟无进度」后转入后台；
+- 之后每次重新添加磁力离线任务，等待时间都是上一次等待时间的 2 倍（20分→40分→80分→…）；
+- 当等待时间翻倍达到「重试最长等待上限」（面板可配置，默认 24 小时，可选 48h/96h/192h/384h=16天）
+  并且这一轮仍未完成时，标记为失败（☠️）并引用原消息通知用户。
 """
 
-import init
+import os
 import time
 from datetime import datetime
-from typing import List, Dict
-from app.utils.message_queue import add_task_to_queue
+from typing import Dict, List
+
+import init
+from telegram.helpers import escape_markdown
+from app.utils.message_queue import add_task_to_queue, send_document_via_bot
+from app.utils.task_tracker import format_retry_task_name
+from app.utils.bot_settings import (
+    BASE_RETRY_WAIT_SECONDS,
+    get_retry_max_wait_seconds,
+    format_retry_cap_label,
+    format_wait_duration,
+)
 from app.core.batch_task_manager import (
     get_pending_retry_tasks,
-    update_retry_attempt,
+    schedule_retry_attempt,
+    defer_retry_attempt,
     mark_task_as_dead,
     update_task_item_status,
     update_task_group_counts,
     get_batch_task_group_info,
-    get_dead_task_groups
+    get_batch_task_items,
+    get_group_actual_path,
+    get_group_display_name,
+    summarize_group_items,
 )
 
+QUICK_PROBE_SECONDS = 10          # 重新提交后快速探测一次，秒传任务可立即判定成功
+SUBMIT_FAIL_DEFER_SECONDS = 600   # 提交失败（配额/网络）时 10 分钟后再试，不计入尝试次数
 
-def execute_batch_retry():
-    """
-    执行批量任务重试
-    每10分钟由调度器调用一次
-    """
-    init.logger.info("🔄 开始检查批量任务重试列表...")
 
-    # 获取待重试任务
-    retry_tasks = get_pending_retry_tasks()
+def compute_next_wait(current_wait, cap_seconds: int) -> int:
+    """下一轮等待时间 = 上一轮 × 2，且不超过上限。"""
+    base = max(int(current_wait or BASE_RETRY_WAIT_SECONDS), BASE_RETRY_WAIT_SECONDS)
+    return int(min(base * 2, cap_seconds))
 
-    if not retry_tasks:
-        init.logger.info("✨ 当前没有待重试的批量任务")
+
+def _is_cloud_done(cloud_task) -> bool:
+    return bool(cloud_task) and (
+        cloud_task.get('status') == 2 or (cloud_task.get('percentDone') or 0) >= 100
+    )
+
+
+def _cloud_map(magnets: List[str]) -> Dict[str, Dict]:
+    if not magnets or init.openapi_115 is None:
+        return {}
+    try:
+        cloud_list = init.openapi_115.get_offline_tasks_for_links(magnets, use_cache=False) or []
+    except Exception as e:
+        init.logger.warn(f"⚠️ 获取离线任务状态失败: {e}")
+        return {}
+    return {t.get('url'): t for t in cloud_list if isinstance(t, dict) and t.get('url')}
+
+
+def _safe_del_cloud(cloud_task, delete_source: bool) -> None:
+    info_hash = (cloud_task or {}).get('info_hash')
+    if not info_hash:
         return
-
-    init.logger.info(f"📋 找到 {len(retry_tasks)} 个待重试任务")
-
-    # 按任务组分组
-    grouped_tasks = {}
-    for task in retry_tasks:
-        group_id = task['group_id']
-        if group_id not in grouped_tasks:
-            grouped_tasks[group_id] = []
-        grouped_tasks[group_id].append(task)
-
-    # 逐组处理重试
-    for group_id, tasks in grouped_tasks.items():
-        init.logger.info(f"📦 处理任务组 {group_id}，包含 {len(tasks)} 个待重试任务")
-
-        # 获取任务组信息
-        group_info = get_batch_task_group_info(group_id)
-        if not group_info:
-            init.logger.error(f"❌ 任务组 {group_id} 信息不存在")
-            continue
-
-        save_path = group_info['save_path']
-        folder_name = group_info['folder_name']
-        actual_path = f"{save_path}/{folder_name}"
-
-        # 提交重试任务到115
-        success_submitted = retry_submit_to_115(tasks, actual_path)
-
-        if not success_submitted:
-            init.logger.warn(f"⚠️ 任务组 {group_id} 提交115失败，将在下次重试")
-            continue
-
-        # 等待一段时间让任务开始处理
-        init.logger.info(f"⏳ 等待60秒后检查重试结果...")
-        time.sleep(60)
-
-        # 检查重试结果
-        check_retry_results(tasks, actual_path)
-
-        # 更新任务组统计
-        update_task_group_counts(group_id)
-
-        # 发送重试结果总结消息给用户
-        send_retry_summary(group_id, folder_name)
-
-    init.logger.info("✅ 批量任务重试检查完成")
+    try:
+        init.openapi_115.del_faild_offline_task(info_hash, delete_source_file=delete_source)
+    except Exception as e:
+        init.logger.warn(f"清理离线任务记录失败: {e}")
 
 
 def retry_submit_to_115(tasks: List[Dict], save_path: str) -> bool:
-    """
-    将重试任务提交到115离线下载
-
-    Args:
-        tasks: 任务列表
-        save_path: 保存路径
-
-    Returns:
-        是否成功提交
-    """
+    """将重试任务重新提交到 115 离线下载"""
     try:
-        # 检查配额
         quota_info = init.openapi_115.get_quota_info()
-        left_offline_quota = quota_info['count'] - quota_info['used']
+        if isinstance(quota_info, dict) and 'count' in quota_info and 'used' in quota_info:
+            left_offline_quota = quota_info['count'] - quota_info['used']
+            if left_offline_quota < len(tasks):
+                init.logger.warn(f"⚠️ 离线配额不足: 剩余 {left_offline_quota}，需要 {len(tasks)}")
+                return False
 
-        if left_offline_quota < len(tasks):
-            init.logger.warn(f"⚠️ 离线配额不足: 剩余 {left_offline_quota}，需要 {len(tasks)}")
-            # 发送通知
-            add_task_to_queue(
-                init.get_primary_user(),
-                f"{init.IMAGE_PATH}/male023.png",
-                f"⚠️ 批量任务重试失败：离线配额不足\n剩余配额: {left_offline_quota}\n需要配额: {len(tasks)}"
-            )
-            return False
-
-        # 构建离线任务URL列表
         offline_urls = "\n".join([task['magnet'] for task in tasks])
-
-        # 提交到115
-        offline_success = init.openapi_115.offline_download_specify_path(
-            offline_urls,
-            save_path
-        )
-
+        offline_success = init.openapi_115.offline_download_specify_path(offline_urls, save_path)
         if offline_success:
-            init.logger.info(f"✅ 成功提交 {len(tasks)} 个重试任务到115")
+            init.logger.info(f"✅ 成功重新提交 {len(tasks)} 个重试任务到115")
             return True
-        else:
-            init.logger.error(f"❌ 提交重试任务到115失败")
-            return False
-
+        init.logger.error("❌ 提交重试任务到115失败")
+        return False
     except Exception as e:
         init.logger.error(f"❌ 提交重试任务异常: {e}")
         return False
 
 
-def check_retry_results(tasks: List[Dict], save_path: str):
+def _process_retry_group(group_id: str, tasks: List[Dict], *, manual: bool = False) -> Dict:
     """
-    检查重试任务的执行结果
-
-    Args:
-        tasks: 任务列表
-        save_path: 保存路径
+    处理一个任务组中到期的重试项：
+    1. 先检查上一轮提交是否已完成 → 成功则标记完成；
+    2. 未完成且本轮等待已达上限 → 标记失败；
+    3. 其余重新提交磁力，并把等待时间翻倍（手动立即重试不翻倍）。
     """
-    try:
-        # 获取115离线任务状态
-        offline_task_status = init.openapi_115.get_offline_tasks()
+    group_info = get_batch_task_group_info(group_id)
+    if not group_info:
+        return {"ok": False, "submitted": 0, "newly_succeeded": 0, "newly_dead": 0, "remaining": 0,
+                "message": "未找到该任务组记录"}
 
-        if not offline_task_status:
-            init.logger.warn("⚠️ 无法获取离线任务状态")
-            return
+    actual_path = get_group_actual_path(group_info)
+    cap = get_retry_max_wait_seconds()
+    cloud = _cloud_map([t['magnet'] for t in tasks if t.get('magnet')])
 
-        # 获取下载目录的文件列表
-        files_in_dir = set()
-        try:
-            parent_info = init.openapi_115.get_file_info(save_path)
-            if parent_info:
-                params = {
-                    "cid": parent_info['file_id'],
-                    "limit": 1000,
-                    "show_dir": 1
-                }
-                file_list = init.openapi_115.get_file_list(params)
-                if file_list:
-                    files_in_dir = {f.get('fn', '') for f in file_list}
-        except Exception as e:
-            init.logger.warn(f"获取目录文件列表失败: {e}")
+    newly_succeeded = 0
+    newly_dead = 0
+    to_resubmit: List[Dict] = []
 
-        # 检查每个任务的状态
-        for task in tasks:
-            task_id = task['id']
-            magnet = task['magnet']
-            group_id = task['group_id']
-            retry_count = task['retry_count']
+    for task in tasks:
+        magnet = task.get('magnet')
+        cloud_task = cloud.get(magnet)
+        if _is_cloud_done(cloud_task):
+            update_task_item_status(magnet, group_id, 'success', cloud_task.get('name') or task.get('resource_name') or '')
+            _safe_del_cloud(cloud_task, False)
+            newly_succeeded += 1
+            continue
 
-            # 在离线任务列表中查找
-            task_found = False
-            download_success = False
-            resource_name = ""
+        current_wait = int(task.get('current_wait') or BASE_RETRY_WAIT_SECONDS)
+        if not manual and task.get('last_retry_at') and current_wait >= cap:
+            mark_task_as_dead(task['id'])
+            _safe_del_cloud(cloud_task, True)
+            newly_dead += 1
+            continue
 
-            for offline_task in offline_task_status:
-                if offline_task.get('url') == magnet:
-                    task_found = True
-                    resource_name = offline_task.get('name', '')
-                    task_status = offline_task.get('status')
-                    task_percent = offline_task.get('percentDone')
+        if cloud_task:
+            _safe_del_cloud(cloud_task, True)  # 删除上一轮未完成的残留任务，避免重复提交冲突
+        to_resubmit.append(task)
 
-                    # 判断是否成功
-                    if task_percent == 100 or task_status == 2:
-                        download_success = True
-                        init.logger.info(f"✅ 任务重试成功: {resource_name}")
-                    break
-
-            # 如果不在列表中，检查目录中是否有对应文件
-            if not task_found and files_in_dir:
-                # 尝试从magnet提取文件名
-                if magnet.startswith('ed2k://'):
-                    parts = magnet.split('|')
-                    if len(parts) >= 3:
-                        expected_name = parts[2]
-                        # 检查是否存在匹配的文件
-                        for filename in files_in_dir:
-                            if expected_name in filename or filename in expected_name:
-                                download_success = True
-                                resource_name = filename
-                                init.logger.info(f"✅ 任务重试成功（目录匹配）: {resource_name}")
-                                break
-
-            # 更新任务状态
-            if download_success:
-                # 标记为成功
-                update_task_item_status(magnet, group_id, 'success', resource_name)
-
-                # 清理离线任务（如果还在列表中）
-                if task_found:
-                    for offline_task in offline_task_status:
-                        if offline_task.get('url') == magnet:
-                            info_hash = offline_task.get('info_hash', '')
-                            if info_hash:
-                                init.openapi_115.del_faild_offline_task(info_hash)
-                            break
-            else:
-                # 失败，更新重试次数
-                new_retry_count = retry_count + 1
-
-                if new_retry_count >= 5:
-                    # 达到最大重试次数，标记为死任务
-                    mark_task_as_dead(task_id)
-                    init.logger.warn(f"☠️ 任务达到最大重试次数，标记为死任务: {magnet[:50]}...")
-
-                    # 发送通知
-                    group_info = get_batch_task_group_info(group_id)
-                    if group_info:
-                        add_task_to_queue(
-                            init.get_primary_user(),
-                            f"{init.IMAGE_PATH}/male023.png",
-                            f"☠️ 批量任务重试失败（已达5次）\n"
-                            f"任务组: {group_info['folder_name']}\n"
-                            f"磁力: {magnet[:100]}...\n"
-                            f"建议手动检查或更换资源"
-                        )
+    submitted = 0
+    if to_resubmit:
+        if retry_submit_to_115(to_resubmit, actual_path):
+            now = int(time.time())
+            for task in to_resubmit:
+                current_wait = int(task.get('current_wait') or BASE_RETRY_WAIT_SECONDS)
+                if manual:
+                    new_wait = min(max(current_wait, BASE_RETRY_WAIT_SECONDS), cap)
                 else:
-                    # 更新重试信息
-                    update_retry_attempt(task_id, new_retry_count)
-                    init.logger.info(f"🔄 任务将在稍后进行第 {new_retry_count + 1} 次重试")
+                    new_wait = compute_next_wait(current_wait, cap)
+                schedule_retry_attempt(task['id'], int(task.get('retry_count') or 0) + 1, new_wait, now)
+                init.logger.info(
+                    f"🔁 任务组 {group_id} 第 {int(task.get('retry_count') or 0) + 2} 次尝试已提交，"
+                    f"等待 {format_wait_duration(new_wait)} 后检查"
+                )
+            submitted = len(to_resubmit)
 
-                # 清理失败的离线任务
-                if task_found:
-                    for offline_task in offline_task_status:
-                        if offline_task.get('url') == magnet:
-                            info_hash = offline_task.get('info_hash', '')
-                            if info_hash:
-                                init.openapi_115.del_faild_offline_task(info_hash)
-                            break
+            # 快速探测：秒传/热种资源可立即判定成功
+            time.sleep(QUICK_PROBE_SECONDS)
+            probe = _cloud_map([t['magnet'] for t in to_resubmit])
+            for task in to_resubmit:
+                cloud_task = probe.get(task['magnet'])
+                if _is_cloud_done(cloud_task):
+                    update_task_item_status(task['magnet'], group_id, 'success', cloud_task.get('name') or '')
+                    _safe_del_cloud(cloud_task, False)
+                    newly_succeeded += 1
+        else:
+            for task in to_resubmit:
+                defer_retry_attempt(task['id'], SUBMIT_FAIL_DEFER_SECONDS)
+            init.logger.warn(f"⚠️ 任务组 {group_id} 提交115失败，{SUBMIT_FAIL_DEFER_SECONDS // 60} 分钟后再试")
 
-    except Exception as e:
-        init.logger.error(f"❌ 检查重试结果异常: {e}")
+    update_task_group_counts(group_id)
+    send_retry_summary(group_id, group_info.get('folder_name') or "", newly_succeeded=newly_succeeded, newly_dead=newly_dead)
+
+    summary = summarize_group_items(get_batch_task_items(group_id))
+    remaining = summary["failed"] + summary["dead"]
+    ok = bool(submitted) or newly_succeeded > 0 or newly_dead > 0 or not to_resubmit
+    return {
+        "ok": ok,
+        "submitted": submitted,
+        "newly_succeeded": newly_succeeded,
+        "newly_dead": newly_dead,
+        "remaining": remaining,
+        "message": (
+            f"本次重新提交 {submitted} 条，成功补全 {newly_succeeded} 条，剩余未完成 {remaining} 条"
+            if ok else "提交 115 离线任务失败（可能是配额不足或授权异常），10 分钟后自动再试"
+        ),
+    }
 
 
-def send_retry_summary(group_id: str, folder_name: str):
+def execute_batch_retry():
+    """调度器定期调用：只处理到期（next_retry_at <= now）的重试项，未到期不会调用 115 接口。"""
+    retry_tasks = get_pending_retry_tasks()
+    if not retry_tasks:
+        init.logger.debug("✨ 当前没有到期的重试任务")
+        return
+
+    grouped: Dict[str, List[Dict]] = {}
+    for task in retry_tasks:
+        grouped.setdefault(task['group_id'], []).append(task)
+
+    init.logger.info(f"🔄 本轮有 {len(retry_tasks)} 条到期重试任务，涉及 {len(grouped)} 个任务组")
+    for group_id, tasks in grouped.items():
+        try:
+            _process_retry_group(group_id, tasks)
+        except Exception as e:
+            init.logger.error(f"❌ 处理任务组 {group_id} 重试失败: {e}")
+    init.logger.info("✅ 本轮到期重试处理完成")
+
+
+def retry_batch_group_now(group_id: str) -> Dict:
+    """面板手动「立即重试本组」：对所有未完成（待重试 / 已失败）的磁力立即重新提交。"""
+    items = [it for it in get_batch_task_items(group_id) if it.get('status') in ('failed', 'dead', 'pending')]
+    if not items:
+        return {"ok": True, "submitted": 0, "newly_succeeded": 0, "newly_dead": 0, "remaining": 0,
+                "message": "该任务组没有需要重试的未完成项"}
+    return _process_retry_group(group_id, items, manual=True)
+
+
+def send_retry_summary(group_id: str, folder_name: str, newly_succeeded: int = 0, newly_dead: int = 0):
     """
-    发送重试任务的总结消息给用户
-
-    Args:
-        group_id: 任务组ID
-        folder_name: 文件夹名
+    发送重试结果通知（全部引用原消息）：
+    - 全部补全 → 完成通知；
+    - 仍有待重试 → 仅在本轮有新增补全时发送进展；
+    - 已无待重试但存在失败项（本轮刚结束）→ 发送最终失败通知。
     """
     try:
-        # 获取任务组信息
         group_info = get_batch_task_group_info(group_id)
         if not group_info:
             init.logger.warn(f"任务组 {group_id} 信息不存在，无法发送总结")
             return
 
-        total_count = group_info['total_count']
-        success_count = group_info['success_count']
-        failed_count = group_info['failed_count']
-        created_at = group_info.get('created_at')
+        items = get_batch_task_items(group_id)
+        summary = summarize_group_items(items)
+        total_count = max(int(group_info.get('total_count') or 0), len(items))
+        success_count = summary["success"]
+        pending_retry = summary["failed"]
+        dead_count = summary["dead"]
+        actual_path = get_group_actual_path(group_info)
+        target_chat = group_info.get('chat_id') or init.get_primary_user()
+        origin_msg_id = group_info.get('origin_message_id')
+        display_name = get_group_display_name(group_info, items)
+        safe_path = escape_markdown(str(actual_path or ""), version=2)
 
-        # 只有失败任务数 > 5 才发送详细总结
-        if failed_count <= 5:
-            init.logger.info(f"任务组 {group_id} 失败任务数 {failed_count} <= 5，不发送总结")
-            return
-
-        # 获取所有失败任务的详细信息
-        from app.utils.sqlitelib import SqlLiteLib
-        with SqlLiteLib() as sqlite:
-            sql = """
-            SELECT magnet, retry_count FROM batch_task_item
-            WHERE group_id = ? AND status = 'failed'
-            ORDER BY id ASC
-            """
-            failed_tasks = sqlite.query_all(sql, (group_id,))
-
-        if not failed_tasks:
-            init.logger.info(f"任务组 {group_id} 没有失败任务")
-            return
-
-        # 获取当前重试次数（取第一个失败任务的 retry_count）
-        current_retry_count = failed_tasks[0].get('retry_count', 0) if failed_tasks else 0
-
-        # 生成错误日志TXT文件
-        from datetime import datetime
-        import os
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{folder_name}_{timestamp}_retry_{current_retry_count}_errors.txt"
-
-        # 按错误类型分组
-        lines = []
-        lines.append(f"错误: 离线下载超时（第 {current_retry_count} 次重试后仍失败）")
-        lines.append(f"状态: 已自动添加到重试列表")
-        for task in failed_tasks:
-            lines.append(task['magnet'])
-        lines.append("")
-
-        # 写入临时文件
-        file_path = f"/tmp/{filename}"
-        with open(file_path, 'w', encoding='utf-8') as f:
-            f.write('\n'.join(lines))
-
-        # 生成总结消息
-        from datetime import datetime
-        import time
-        current_timestamp = int(time.time())
-
-        # 计算任务持续时间
-        if created_at:
-            duration_seconds = current_timestamp - created_at
-        else:
-            duration_seconds = 0
-
-        # 格式化持续时间
-        def format_duration(seconds):
-            if seconds < 60:
-                return f"{seconds}秒"
-            elif seconds < 3600:
-                minutes = seconds // 60
-                return f"{minutes}分钟"
-            elif seconds < 86400:
-                hours = seconds // 3600
-                return f"{hours}小时"
-            else:
-                days = seconds // 86400
-                return f"{days}天"
-
-        duration_str = format_duration(duration_seconds)
-
-        # 格式化首次添加时间
-        if created_at:
-            created_time = datetime.fromtimestamp(created_at)
-            created_time_str = created_time.strftime("%Y-%m-%d %H:%M:%S")
-        else:
-            created_time_str = "未知"
-
-        # 计算下次检查时间
-        from app.core.batch_task_manager import calculate_next_retry_time
-        next_retry_timestamp = calculate_next_retry_time(current_retry_count)
-        next_check_seconds = next_retry_timestamp - current_timestamp
-
-        # 格式化下次检查时间
-        next_check_str = format_duration(next_check_seconds)
-
-        # 计算进行中的任务数
-        pending_count = total_count - success_count - failed_count
-
-        # 构建消息
-        caption_lines = [
-            f"📄 {folder_name} 的批量下载任务",
-            f"首次添加: {created_time_str}",
-            f"距首次添加已过: {duration_str}",
-            f"此为第 {current_retry_count + 1} 次尝试",
-            f"此次批量离线任务持续时间: {duration_str}",
-            "",
-            f"此次下载任务数量统计：",
-            f"败: {failed_count} / 续: {pending_count} / 完: {success_count}",
-            f"总 {total_count}",
-            "",
-        ]
-
-        # 如果还会继续重试
-        if current_retry_count < 4:  # max_retry = 5
-            caption_lines.append(f"现在将重新添加失败的任务")
-            caption_lines.append(f"下次检查时间: {next_check_str}后")
-            caption_lines.append(f"你也可[删除]该离线任务，无操作将继续尝试")
-        else:
-            caption_lines.append(f"⚠️ 已达到最大重试次数（5次）")
-            caption_lines.append(f"失败的任务将被标记为死任务")
-            caption_lines.append(f"请手动检查磁力链接或更换资源")
-
-        caption = "\n".join(caption_lines)
-
-        # 发送文件和消息
-        import asyncio
-        from telegram import Bot
-        bot = Bot(token=init.get_bot_token())
-
-        import nest_asyncio
-        nest_asyncio.apply()
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        with open(file_path, 'rb') as f:
-            loop.run_until_complete(
-                bot.send_document(
-                    chat_id=init.get_primary_user(),
-                    document=f,
-                    caption=caption
-                )
+        # 情况1：全部补全
+        if pending_retry == 0 and dead_count == 0 and success_count >= total_count:
+            header = escape_markdown(
+                f"✅ 后台自动重试完成！任务「{display_name}」已全部补全（{success_count}/{total_count}）",
+                version=2,
             )
-        loop.close()
+            add_task_to_queue(target_chat, None, f"{header}\n\n📁 保存路径: `{safe_path}`", reply_to_message_id=origin_msg_id)
+            init.logger.info(f"✅ 已发送后台重试全部补全通知（group={group_id}, reply={origin_msg_id}）")
+            return
 
-        # 删除临时文件
-        os.remove(file_path)
-        init.logger.info(f"✅ 已发送重试总结消息（第 {current_retry_count + 1} 次尝试）")
+        # 情况2：仍有待重试项
+        if pending_retry > 0:
+            if newly_succeeded > 0:
+                next_hint = ""
+                if summary["next_retry_at"]:
+                    next_hint = f"，下次检查约 {format_wait_duration(summary['next_retry_at'] - int(time.time()))}后"
+                header = escape_markdown(
+                    f"🔄 后台重试进展（{display_name}）：本次补全 {newly_succeeded} 条，累计完成 {success_count}/{total_count}，"
+                    f"剩余 {pending_retry} 条将继续自动重试（第 {summary['attempt']} 次尝试{next_hint}）",
+                    version=2,
+                )
+                add_task_to_queue(target_chat, None, f"{header}\n\n📁 保存路径: `{safe_path}`", reply_to_message_id=origin_msg_id)
+                init.logger.info(f"✅ 已发送后台重试进展通知（group={group_id}, newly_succeeded={newly_succeeded}）")
+            else:
+                init.logger.info(f"任务组 {group_id} 仍有 {pending_retry} 条待重试且本轮无新增成功，跳过通知")
+            return
 
+        # 情况3：重试结束但存在失败项（仅在本轮刚结束时通知一次）
+        if dead_count > 0 and (newly_dead > 0 or newly_succeeded > 0):
+            cap_label = format_retry_cap_label()
+            dead_links = [it.get('magnet', '') for it in items if it.get('status') == 'dead' and it.get('magnet')]
+            header = escape_markdown(
+                f"⛔ 任务「{display_name}」自动重试结束：成功 {success_count}/{total_count}，"
+                f"{dead_count} 条等待已达上限（{cap_label}）仍未完成，已标记失败",
+                version=2,
+            )
+            preview = "\n".join(f"`{escape_markdown(link[:200], version=2)}`" for link in dead_links[:5])
+            more = escape_markdown(f"\n…另有 {len(dead_links) - 5} 条，详见附件", version=2) if len(dead_links) > 5 else ""
+            add_task_to_queue(
+                target_chat,
+                None,
+                f"{header}\n\n📁 保存路径: `{safe_path}`\n\n{preview}{more}",
+                reply_to_message_id=origin_msg_id,
+            )
+            if len(dead_links) > 5:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                file_path = os.path.join(init.TEMP if getattr(init, "TEMP", None) else "/tmp", f"failed_{group_id}_{timestamp}.txt")
+                try:
+                    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                    with open(file_path, 'w', encoding='utf-8') as f:
+                        f.write("\n".join(dead_links) + "\n")
+                    send_document_via_bot(
+                        chat_id=target_chat,
+                        file_path=file_path,
+                        caption=f"⛔ {display_name} 失败磁力列表（{len(dead_links)} 条）"[:1024],
+                        reply_to_message_id=origin_msg_id,
+                    )
+                finally:
+                    if os.path.exists(file_path):
+                        os.remove(file_path)
+            init.logger.info(f"⛔ 已发送任务组 {group_id} 最终失败通知")
     except Exception as e:
         init.logger.error(f"❌ 发送重试总结消息失败: {e}")
 
 
-def notify_dead_task_groups():
-    """
-    通知用户包含死任务的任务组
-    """
-    try:
-        dead_groups = get_dead_task_groups()
-
-        if not dead_groups:
-            return
-
-        init.logger.info(f"⚠️ 发现 {len(dead_groups)} 个包含死任务的任务组")
-
-        for group in dead_groups:
-            group_id = group['group_id']
-            folder_name = group['folder_name']
-            total_count = group['total_count']
-            success_count = group['success_count']
-            failed_count = group['failed_count']
-
-            message = f"""
-☠️ **批量任务组包含死任务**
-
-**任务组ID:** `{group_id}`
-**文件夹:** `{folder_name}`
-**完成情况:** {success_count}/{total_count} 成功，{failed_count} 失败
-
-该任务组已尝试重试5次仍有任务失败，建议：
-1. 检查磁力链接是否有效
-2. 尝试更换资源
-3. 手动下载失败的文件
-"""
-
-            add_task_to_queue(
-                init.get_primary_user(),
-                f"{init.IMAGE_PATH}/male023.png",
-                message
-            )
-
-    except Exception as e:
-        init.logger.error(f"❌ 通知死任务异常: {e}")
-
-
 if __name__ == '__main__':
-    # 用于测试
     init.load_yaml_config()
     init.create_logger()
     execute_batch_retry()

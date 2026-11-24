@@ -2,29 +2,19 @@
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 import init
 import threading
-from app.core.subscribe_movie import schedule_movie
-from apscheduler.triggers.interval import IntervalTrigger
-from app.core.av_daily_update import av_daily_update, repair_leak
-from app.handlers.offline_task_handler import try_to_offline2115_again
-from app.core.sehua_spider import sehua_spider_start
-from app.core.offline_task_retry import offline_task_retry
 from app.core.batch_task_retry import execute_batch_retry
 
 scheduler = BlockingScheduler()
 
-# 定义任务列表
+# 定义任务列表：统一任务队列的自动重试（每 2 分钟仅查询本地数据库，到期项才会调用 115 接口）
 tasks = [
-    {"id": "subscribe_movie_task", "func": schedule_movie, "interval": 4 * 60 * 60, "task_type": "interval"},
-    {"id": "av_daily_update_task", "func": av_daily_update, "hour": 20, "minute": 00, "task_type": "time"},
-    {"id": "offline_task_retry_task", "func": offline_task_retry, "hour": "9,18", "minute": 00, "task_type": "time"},
-    {"id": "retry_failed_downloads", "func": try_to_offline2115_again, "interval": 12 * 60 * 60, "task_type": "interval"},
-    {"id": "sehua_spider_task", "func": sehua_spider_start, "hour": 0, "minute": 5, "task_type": "time"},
-    {"id": "batch_task_retry", "func": execute_batch_retry, "interval": 10 * 60, "task_type": "interval"}  # 每10分钟执行一次
+    {"id": "batch_task_retry", "func": execute_batch_retry, "interval": 2 * 60, "task_type": "interval"},
 ]
 
-def subscribe_scheduler():
+def run_scheduler():
     for task in tasks:
         if not scheduler.get_job(task["id"]):
             if task['task_type'] == 'interval':
@@ -44,7 +34,7 @@ def subscribe_scheduler():
         scheduler.start()
 
 
-def stop_all_subscriptions():
+def stop_all_scheduled_tasks():
     for task in tasks:
         job = scheduler.get_job(task['id'])
         if job:
@@ -54,10 +44,8 @@ def stop_all_subscriptions():
             init.logger.info(f"任务 {task['id']} 不存在")
 
 
-
-
 def start_scheduler_in_thread():
-    thread = threading.Thread(target=subscribe_scheduler)
+    thread = threading.Thread(target=run_scheduler)
     thread.daemon = True  # 设置为守护线程，主线程退出时自动结束
     thread.start()
 

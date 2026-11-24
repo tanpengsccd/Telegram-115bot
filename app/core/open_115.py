@@ -86,6 +86,11 @@ class OpenAPI_115:
         self._rate_limit_lock = threading.Lock()
         self._last_request_time = 0
         self._rate_limit_interval = 1.0  # 秒
+        # 第1页离线任务短时共享缓存（避免多任务并发轮询重复拉取）
+        self._offline_page1_cache_lock = threading.Lock()
+        self._offline_page1_cache_ts = 0.0
+        self._offline_page1_cache_data = None
+        self._offline_page1_cache_ttl = 3.0  # 秒
         self.get_token()  # 初始化时获取token
         
     def get_token(self):
@@ -385,6 +390,7 @@ class OpenAPI_115:
         }
         response = self._make_api_request('POST', url, data=data, headers=self._get_headers())
         if response['state'] == True:
+            self.invalidate_offline_page1_cache()
             init.logger.info(f"离线下载任务添加成功: {response['message']}")
             return True
         else:
@@ -406,6 +412,7 @@ class OpenAPI_115:
         }
         response = self._make_api_request('POST', url, data=data, headers=self._get_headers())
         if response['state'] == True:
+            self.invalidate_offline_page1_cache()
             init.logger.info(f"离线下载任务添加成功: {response}")
             return True
         else:
@@ -443,6 +450,7 @@ class OpenAPI_115:
         response = self._make_api_request('POST', url, data=data, headers=self._get_headers())
 
         if response['state'] == True:
+            self.invalidate_offline_page1_cache()
             init.logger.info(f"批量离线下载任务添加成功: {response}")
             return True
         else:
@@ -489,18 +497,102 @@ class OpenAPI_115:
             init.logger.warn(f"批量离线下载任务添加失败: {response['message']}")
             raise Exception(response['message'])
 
-    # @handle_token_expiry
+    def invalidate_offline_page1_cache(self):
+        """主动失效第1页离线任务缓存（提交/删除/清理后调用）"""
+        lock = getattr(self, "_offline_page1_cache_lock", None)
+        if lock is not None:
+            with lock:
+                self._offline_page1_cache_ts = 0.0
+                self._offline_page1_cache_data = None
+        else:
+            self._offline_page1_cache_ts = 0.0
+            self._offline_page1_cache_data = None
+
+    @staticmethod
+    def _normalize_offline_task(task: dict) -> dict:
+        return {
+            'name': task.get('name', ''),
+            'url': task.get('url', ''),
+            'status': task.get('status'),
+            'percentDone': task.get('percentDone', 0),
+            'info_hash': task.get('info_hash', ''),
+            'file_id': task.get('file_id', ''),               # 最终目录id
+            'wp_path_id': task.get('wp_path_id', ''),         # 下载目录id
+            'delete_file_id': task.get('delete_file_id', ''), # 同file_id
+        }
+
+    def get_offline_tasks_for_links(self, target_urls, max_pages=None, use_cache=True):
+        """
+        按需分页获取离线任务状态：从第1页开始拉取，一旦 target_urls 全部命中或达到合理页数上限立即停止，
+        避免全量翻遍几十页历史记录，同时通过3秒第1页共享缓存避免并发任务重复调用API。
+        """
+        remaining = {u for u in (target_urls or []) if u}
+        page1_data = None
+
+        lock = getattr(self, "_offline_page1_cache_lock", None)
+        ttl = getattr(self, "_offline_page1_cache_ttl", 3.0)
+        if use_cache and lock is not None:
+            with lock:
+                if (
+                    self._offline_page1_cache_data is not None
+                    and (time.monotonic() - self._offline_page1_cache_ts) < ttl
+                ):
+                    page1_data = self._offline_page1_cache_data
+
+        if page1_data is None:
+            page1_data = self.get_offline_tasks_by_page(page=1)
+            if isinstance(page1_data, dict) and lock is not None:
+                with lock:
+                    self._offline_page1_cache_data = page1_data
+                    self._offline_page1_cache_ts = time.monotonic()
+
+        if not isinstance(page1_data, dict) or 'tasks' not in page1_data:
+            return None
+
+        task_list = []
+        raw_page1_tasks = page1_data.get('tasks') or []
+        for task in raw_page1_tasks:
+            if isinstance(task, dict):
+                norm = self._normalize_offline_task(task)
+                task_list.append(norm)
+                remaining.discard(norm['url'])
+
+        page_count = int(page1_data.get('page_count') or 1)
+        if not remaining or page_count <= 1:
+            return task_list
+
+        # 计算合理翻页上限（115每页约30条）：避免因某条已被清理而把全部历史页翻完
+        if max_pages is None:
+            per_page = max(len(raw_page1_tasks), 30)
+            max_pages = min(page_count, max(3, (len(target_urls or []) + per_page - 1) // per_page + 2))
+        else:
+            max_pages = min(page_count, max(1, int(max_pages)))
+
+        for page in range(2, max_pages + 1):
+            if not remaining:
+                break
+            page_data = self.get_offline_tasks_by_page(page=page)
+            if not isinstance(page_data, dict) or 'tasks' not in page_data:
+                break
+            for task in (page_data.get('tasks') or []):
+                if isinstance(task, dict):
+                    norm = self._normalize_offline_task(task)
+                    task_list.append(norm)
+                    remaining.discard(norm['url'])
+
+        return task_list
+
+    @handle_token_expiry
     def get_offline_tasks_by_page(self, page=1):
         url = f"{self.base_url}/open/offline/get_task_list"
         params = {"page": page}
         response = self._make_api_request('GET', url, params=params)
         if isinstance(response, dict) and response.get('code') == 0 and 'data' in response:
-            return response['data'] 
+            return response['data']
         else:
             init.logger.warn(f"获取离线下载任务列表失败: {response}")
             if isinstance(response, dict) and response.get('code') == 40140125:
-                if response['code'] == 40140125:
-                    return response
+                return response
             return None
     
     @handle_token_expiry
@@ -549,6 +641,7 @@ class OpenAPI_115:
         }
         response = self._make_api_request('POST', url, data=data, headers=self._get_headers())
         if response['state'] == True:
+            self.invalidate_offline_page1_cache()
             init.logger.info(f"清理失败的离线下载任务成功!")
             return True
         else:
@@ -566,6 +659,7 @@ class OpenAPI_115:
         }
         response = self._make_api_request('POST', url, data=data)
         if response['state'] == True:
+            self.invalidate_offline_page1_cache()
             init.logger.info(f"清理云端任务成功！")
             return True
         else:

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyParameters
 from telegram.ext import ContextTypes, CommandHandler, ConversationHandler, \
     MessageHandler, filters, CallbackQueryHandler
 import init
@@ -9,8 +9,11 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 import hashlib
+import uuid
 from warnings import filterwarnings
 from telegram.warnings import PTBUserWarning
+from app.utils.reaction import REACTION_DONE, REACTION_ERROR, set_message_reaction_safe
+from app.utils.task_tracker import register_task, update_task, update_task_item, finish_task
 
 filterwarnings(action="ignore", message=r".*CallbackQueryHandler", category=PTBUserWarning)
 
@@ -30,7 +33,9 @@ async def save_video2115(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if update.message and update.message.video:
         context.user_data['video'] = {
-            "file_name": update.message.document.file_name if update.message.document else None
+            "file_name": update.message.document.file_name if update.message.document else (update.message.video.file_name if update.message.video else None),
+            "chat_id": update.effective_chat.id,
+            "message_id": update.message.message_id,
         }
         # 显示主分类（电影/剧集）
         keyboard = [
@@ -92,51 +97,110 @@ async def select_sub_category_video(update: Update, context: ContextTypes.DEFAUL
     if not file_name:
         file_name = datetime.now().strftime("%Y%m%d%H%M%S") + ".mp4"
     file_path = f"{init.TEMP}/{file_name}"
+    orig_chat_id = video.get("chat_id")
+    orig_msg_id = video.get("message_id")
+    upload_task_id = f"upload_{uuid.uuid4().hex[:8]}"
+    register_task(
+        upload_task_id,
+        task_type="upload",
+        title=file_name,
+        total=1,
+        save_path=selected_path,
+        user_id=update.effective_user.id if update.effective_user else None,
+        stage="从Telegram下载视频",
+        items=[{"index": 1, "name": file_name, "status": "running", "percent": 10}],
+        chat_id=orig_chat_id or update.effective_chat.id,
+        origin_message_id=orig_msg_id,
+    )
+    reply_params = (
+        ReplyParameters(message_id=orig_msg_id, allow_sending_without_reply=True)
+        if orig_msg_id
+        else None
+    )
 
-    await context.bot.send_message(chat_id=update.effective_chat.id,
-                                   text=f"😼收到视频文件: [{file_name}] \n正在下载中...")
-    
-    async with init.tg_user_client:
-        # 获取最后一条视频消息
-        msgs = await init.tg_user_client.get_messages(init.bot_config['bot_name'], limit=5)
-        for msg in msgs:
-            if msg.media:
-                saved_path = await init.tg_user_client.download_media(msg, file=file_path)
-                break
-    
-    
-    # 判断视频文件类型
-    formate_name = detect_video_format(saved_path)
-    new_file_path = saved_path[:-3] + formate_name
-    if saved_path != new_file_path:
-        os.rename(saved_path, new_file_path)
-    await context.bot.send_message(chat_id=update.effective_chat.id,
-                                   text=f"✅ 视频文件[{new_file_path}]下载完成，正在上传至115...")
-    file_size = os.path.getsize(new_file_path)
-    # 计算文件的SHA1值
-    sha1_value = file_sha1(new_file_path)
-    # 上传至115
-    is_upload, bingo = init.openapi_115.upload_file(target=selected_path,
-                                       file_name=file_name,
-                                       file_size=file_size,
-                                       fileid=sha1_value,
-                                       file_path=file_path,
-                                       request_times=1)
-    if is_upload:
-        if bingo:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="⚡ 已秒传！")
+    is_upload = False
+    try:
+        await context.bot.send_message(chat_id=update.effective_chat.id,
+                                       text=f"😼收到视频文件: [{file_name}] \n正在下载中...")
+        
+        saved_path = file_path
+        async with init.tg_user_client:
+            # 获取最后一条视频消息
+            msgs = await init.tg_user_client.get_messages(init.bot_config['bot_name'], limit=5)
+            for msg in msgs:
+                if msg.media:
+                    saved_path = await init.tg_user_client.download_media(msg, file=file_path)
+                    break
+        
+        
+        # 判断视频文件类型
+        formate_name = detect_video_format(saved_path)
+        new_file_path = saved_path[:-3] + formate_name
+        if saved_path != new_file_path:
+            os.rename(saved_path, new_file_path)
+        update_task(upload_task_id, stage="上传至115网盘")
+        update_task_item(upload_task_id, 1, status="running", percent=60)
+        await context.bot.send_message(chat_id=update.effective_chat.id,
+                                       text=f"✅ 视频文件[{new_file_path}]下载完成，正在上传至115...")
+        file_size = os.path.getsize(new_file_path)
+        # 计算文件的SHA1值
+        sha1_value = file_sha1(new_file_path)
+        # 上传至115
+        is_upload, bingo = init.openapi_115.upload_file(target=selected_path,
+                                           file_name=file_name,
+                                           file_size=file_size,
+                                           fileid=sha1_value,
+                                           file_path=new_file_path,
+                                           request_times=1)
+        if is_upload:
+            update_task_item(upload_task_id, 1, status="success", percent=100)
+            if bingo:
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=f"⚡ 视频 [{file_name}] 已秒传至 {selected_path}！",
+                    reply_parameters=reply_params,
+                )
+            else:
+                await context.bot.send_message(
+                    chat_id=update.effective_chat.id,
+                    text=f"✅ 视频 [{file_name}] 已上传完成，保存路径：{selected_path}",
+                    reply_parameters=reply_params,
+                )
         else:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text="✅ 已上传！")
-    else:
-        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ 上传失败！")
-
-    # 删除本地文件
-    for filename in os.listdir(init.TEMP):
-        fp = os.path.join(init.TEMP, filename)
-        if os.path.isfile(fp):
-            os.remove(fp)
-        elif os.path.isdir(fp):
-            shutil.rmtree(fp)
+            update_task_item(upload_task_id, 1, status="failed", error="115上传失败")
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"❌ 视频 [{file_name}] 上传失败！",
+                reply_parameters=reply_params,
+            )
+    except Exception as e:
+        init.logger.error(f"视频上传处理失败: {e}", exc_info=True)
+        update_task_item(upload_task_id, 1, status="failed", error=str(e)[:60])
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"❌ 上传异常：{e}",
+            reply_parameters=reply_params,
+        )
+    finally:
+        finish_task(
+            upload_task_id,
+            status="completed" if is_upload else "failed",
+            note="上传完成" if is_upload else "上传失败",
+        )
+        if orig_chat_id and orig_msg_id:
+            await set_message_reaction_safe(
+                context.bot,
+                orig_chat_id,
+                orig_msg_id,
+                REACTION_DONE if is_upload else REACTION_ERROR,
+            )
+        # 删除本地文件
+        for filename in os.listdir(init.TEMP):
+            fp = os.path.join(init.TEMP, filename)
+            if os.path.isfile(fp):
+                os.remove(fp)
+            elif os.path.isdir(fp):
+                shutil.rmtree(fp)
 
     return ConversationHandler.END
 

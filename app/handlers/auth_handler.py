@@ -2,7 +2,9 @@
 
 from telegram import Update
 from telegram.ext import CommandHandler, ConversationHandler, ContextTypes
+import asyncio
 import init
+from app.utils.reaction import REACTION_DONE, REACTION_ERROR, set_message_reaction_safe
 
 
 # 定义对话的步骤
@@ -11,10 +13,12 @@ import init
 
 async def auth_pkce_115(update: Update, context: ContextTypes.DEFAULT_TYPE):
     usr_id = update.message.from_user.id
+    ok = False
     if init.check_user(usr_id):
         if check_115_app_id():
-            init.openapi_115.auth_pkce(usr_id, init.bot_config['115_app_id'])
+            await asyncio.to_thread(init.openapi_115.auth_pkce, usr_id, init.bot_config['115_app_id'])
             if init.openapi_115.access_token and init.openapi_115.refresh_token:
+                ok = True
                 await update.message.reply_text("✅ 授权成功！")
             else:
                 await update.message.reply_text("⚠️ 授权失败，请检查配置文件中的app_id是否正确！")
@@ -22,6 +26,13 @@ async def auth_pkce_115(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ 115开放平台APPID未配置！")
     else:
         await update.message.reply_text(f"⚠️ 对不起，您无权使用115机器人！")
+    if update.message:
+        await set_message_reaction_safe(
+            context.bot,
+            update.effective_chat.id,
+            update.message.message_id,
+            REACTION_DONE if ok else REACTION_ERROR,
+        )
     # 结束对话
     return ConversationHandler.END
 

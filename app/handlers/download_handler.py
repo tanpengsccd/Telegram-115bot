@@ -5,6 +5,7 @@ from telegram.ext import ContextTypes, CommandHandler, ConversationHandler, \
     MessageHandler, filters, CallbackQueryHandler
 from telegram.error import TelegramError
 import init
+import os
 import re
 import time
 import asyncio
@@ -16,6 +17,19 @@ from warnings import filterwarnings
 from telegram.warnings import PTBUserWarning
 from app.utils.sqlitelib import *
 from concurrent.futures import ThreadPoolExecutor
+from app.utils.reaction import (
+    REACTION_DONE,
+    REACTION_ERROR,
+    set_message_reaction_safe,
+    schedule_reactions_batch,
+)
+from app.utils.task_tracker import (
+    register_task,
+    update_task,
+    update_task_item,
+    finish_task,
+    format_retry_task_name,
+)
 
 filterwarnings(action="ignore", message=r".*CallbackQueryHandler", category=PTBUserWarning)
 
@@ -113,17 +127,29 @@ async def finalize_download_submission(context, user_id, selected_path, custom_f
     elif chat_id is not None:
         await context.bot.send_message(chat_id=chat_id, text=text)
 
+    reaction_targets = list(context.user_data.get("reaction_targets") or [])
+
     # 使用批量下载处理（减少API调用频率）
     download_executor.submit(
         download_tasks_batch,
         links,
         selected_path,
         user_id,
-        custom_folder_name
+        custom_folder_name,
+        reaction_targets,
     )
 
     # 清理用户数据
     context.user_data.clear()
+
+    # 若当前对话存在常驻底部面板，将其重新置底
+    target_chat_id = chat_id
+    if target_chat_id is None and query and getattr(query, "message", None):
+        target_chat_id = query.message.chat_id
+    if target_chat_id:
+        from app.handlers.menu_handler import refresh_bottom_panel_if_exists
+        await refresh_bottom_panel_if_exists(context.bot, target_chat_id)
+
     return ConversationHandler.END
 
 
@@ -217,6 +243,7 @@ async def trigger_batch_download_after_delay(user_id: int, chat_id: int, context
         context.user_data["links"] = buffer["links"]
         context.user_data["custom_folder_name"] = custom_folder_name
         context.user_data["total_links"] = len(buffer["links"])
+        context.user_data["reaction_targets"] = list(buffer.get("reaction_targets") or [])
 
         if custom_folder_name:
             init.logger.info(f"从合并消息中提取到自定义文件夹名: {custom_folder_name}")
@@ -285,13 +312,50 @@ async def trigger_batch_download_after_delay(user_id: int, chat_id: int, context
         init.pending_messages_buffer.pop(user_id, None)
 
 
+LINK_PROTOCOL_RE = re.compile(r'(magnet:|ed2k://|thunder://)', re.IGNORECASE)
+
+
+def extract_message_text_and_entity_links(message) -> str:
+    """提取消息正文、媒体配文(caption)及 text_link 实体中的链接文本"""
+    if message is None:
+        return ""
+    parts = []
+    text = getattr(message, "text", None) or getattr(message, "caption", None) or ""
+    if text:
+        parts.append(text.strip())
+    for entities_attr in ("entities", "caption_entities"):
+        entities = getattr(message, entities_attr, None) or []
+        for ent in entities:
+            url = getattr(ent, "url", None)
+            if url and LINK_PROTOCOL_RE.search(url) and url not in text:
+                parts.append(url)
+    return "\n".join(parts).strip()
+
+
+class DownloadLinkFilter(filters.MessageFilter):
+    """匹配正文、媒体配文(caption)或超链接实体中包含磁力/ed2k/迅雷链接的消息"""
+
+    def filter(self, message) -> bool:
+        if message is None:
+            return False
+        # .txt 文档交给 handle_txt_file 处理，避免重复触发
+        doc = getattr(message, "document", None)
+        if doc and (getattr(doc, "file_name", None) or "").lower().endswith(".txt"):
+            return False
+        combined = extract_message_text_and_entity_links(message)
+        return bool(combined and LINK_PROTOCOL_RE.search(combined))
+
+
+DOWNLOAD_LINK_FILTER = DownloadLinkFilter()
+
+
 async def start_d_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     usr_id = update.message.from_user.id
     if not init.check_user(usr_id):
         await update.message.reply_text("⚠️ 对不起，您无权使用115机器人！")
         return ConversationHandler.END
 
-    message_text = update.message.text.strip()
+    message_text = extract_message_text_and_entity_links(update.message)
     chat_id = update.effective_chat.id
 
     # 解析多个下载链接（使用统一的链接提取函数）
@@ -301,6 +365,7 @@ async def start_d_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 检查是否有有效链接
     if not valid_links:
         await update.message.reply_text("⚠️ 未找到有效的下载链接，请检查格式后重试！")
+        await set_message_reaction_safe(context.bot, chat_id, update.message.message_id, REACTION_ERROR)
         return ConversationHandler.END
 
     # 自动忽略无关信息，只提示找到的有效链接数量
@@ -315,14 +380,17 @@ async def start_d_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buffer = init.pending_messages_buffer.setdefault(usr_id, {
         "messages": [],
         "links": [],
+        "reaction_targets": [],
         "timer_task": None,
         "context": context,
         "chat_id": chat_id
     })
 
-    # 添加消息文本和链接到缓冲区
+    # 添加消息文本、链接及待更新表情的目标消息到缓冲区
     buffer["messages"].append(message_text)
     buffer["links"].extend(valid_links)
+    if update.message:
+        buffer.setdefault("reaction_targets", []).append((chat_id, update.message.message_id))
     buffer["context"] = context  # 更新context
     buffer["chat_id"] = chat_id  # 更新chat_id
 
@@ -428,6 +496,8 @@ async def reset_save_path_command(update: Update, context: ContextTypes.DEFAULT_
         await update.message.reply_text("✅ 已清除保存路径，下次会重新提示分类。")
     else:
         await update.message.reply_text("ℹ️ 当前没有记录的保存路径。")
+    if update.message:
+        await set_message_reaction_safe(context.bot, update.effective_chat.id, update.message.message_id, REACTION_DONE)
 
 
 # === 独立的全局回调处理器（支持定时器触发的消息）===
@@ -762,20 +832,16 @@ def notice_emby_scan_library():
         return False
 
 
-def save_failed_download_to_db(title, magnet, save_path):
-    """保存失败的下载任务到数据库"""
-    try:
-        with SqlLiteLib() as sqlite:
-            # 检查是否已存在相同的任务
-            check_sql = "SELECT * FROM offline_task WHERE magnet = ? AND save_path = ? AND title = ?"
-            existing = sqlite.query_one(check_sql, (magnet, save_path, title))
-
-            if not existing:
-                sql = "INSERT INTO offline_task (title, magnet, save_path) VALUES (?, ?, ?)"
-                sqlite.execute_sql(sql, (title, magnet, save_path))
-                init.logger.info(f"[{title}]已添加到重试列表")
-    except Exception as e:
-        raise str(e)
+def save_failed_download_to_db(title, magnet, save_path, chat_id=None, origin_message_id=None):
+    """保存失败的下载任务：统一加入任务队列（1 条链接的任务组），由后台按 2 倍退避自动重试"""
+    from app.core.batch_task_manager import create_single_retry_group
+    return create_single_retry_group(
+        title or "",
+        magnet,
+        save_path,
+        chat_id=chat_id,
+        origin_message_id=origin_message_id,
+    )
 
 
 def format_batch_progress_message(total_count, task_results, max_chars=4096):
@@ -1145,7 +1211,7 @@ def process_failed_download_silent(link, selected_path, user_id, resource_name, 
     init.logger.warn(timeout_message)
 
     # 批量下载失败时，直接添加到重试列表
-    title = resource_name if resource_name else f"未知资源_{task_index}"
+    title = format_retry_task_name(resource_name, link, link_count=1)
     save_failed_download_to_db(title, link, selected_path)
     init.logger.info(f"{progress_info} 批量下载失败，已自动添加到重试列表")
 
@@ -1164,7 +1230,7 @@ def process_failed_download(link, selected_path, user_id, resource_name, task_in
     # 当有2个及以上链接时，跳过重命名提示，直接添加到重试列表
     if total_count >= 2:
         # 批量下载失败时，直接添加到重试列表，不提示用户
-        title = resource_name if resource_name else f"未知资源_{task_index}"
+        title = format_retry_task_name(resource_name, link, link_count=1)
         save_failed_download_to_db(title, link, selected_path)
 
         failure_text = f"{progress_info} "
@@ -1206,22 +1272,77 @@ def process_failed_download(link, selected_path, user_id, resource_name, task_in
         add_task_to_queue(user_id, None, message=message, keyboard=reply_markup)
 
 
-def download_tasks_batch(links, selected_path, user_id, custom_folder_name=""):
-    """批量下载任务处理（减少API调用频率）"""
+def download_tasks_batch(links, selected_path, user_id, custom_folder_name="", reaction_targets=None):
+    """批量下载任务处理（减少API调用频率，实时更新磁力明细并在完成时引用原消息通知）"""
+    import uuid
+    from telegram.helpers import escape_markdown
     from app.utils.message_queue import add_task_to_queue
 
     total_count = len(links)
     init.logger.info(f"开始批量处理 {total_count} 个下载任务")
+    tracker_id = f"dl_{uuid.uuid4().hex[:8]}"
+    task_title = custom_folder_name or (f"批量下载({total_count}个)" if total_count > 1 else "单链接离线下载")
 
+    origin_chat_id = user_id
+    origin_message_id = None
+    if reaction_targets and isinstance(reaction_targets[0], (tuple, list)) and len(reaction_targets[0]) == 2:
+        origin_chat_id, origin_message_id = reaction_targets[0]
+
+    initial_items = [
+        {"index": idx, "link": item.get("link", ""), "status": "pending", "percent": 0}
+        for idx, item in enumerate(links, 1)
+    ]
+
+    register_task(
+        tracker_id,
+        task_type="download",
+        title=task_title,
+        total=total_count,
+        save_path=selected_path,
+        user_id=user_id,
+        stage="提交离线任务",
+        items=initial_items,
+        chat_id=origin_chat_id,
+        origin_message_id=origin_message_id,
+    )
+
+    succeeded = False
     try:
-        _download_tasks_batch_impl(links, selected_path, user_id, custom_folder_name)
+        _download_tasks_batch_impl(
+            links,
+            selected_path,
+            user_id,
+            custom_folder_name,
+            tracker_id=tracker_id,
+            origin_message_id=origin_message_id,
+        )
+        succeeded = True
+        finish_task(tracker_id, status="completed", note="已完成")
     except Exception as e:
         init.logger.error(f"批量下载任务执行失败: {e}", exc_info=True)
-        add_task_to_queue(user_id, f"{init.IMAGE_PATH}/male023.png",
-                         message=f"❌ 批量下载任务执行失败: {str(e)}\n请查看日志获取详细信息")
+        finish_task(tracker_id, status="failed", note=str(e)[:40])
+        err_msg = escape_markdown(f"❌ 批量下载任务执行失败: {str(e)}\n请查看日志获取详细信息", version=2)
+        add_task_to_queue(
+            user_id,
+            f"{init.IMAGE_PATH}/male023.png",
+            message=err_msg,
+            reply_to_message_id=origin_message_id,
+        )
+    finally:
+        # 对话内跟踪结束后仍未出结果（提交失败/查询异常）的项转入后台自动重试
+        try:
+            from app.utils.task_tracker import get_task as _get_tracked_task
+            from app.core.batch_task_manager import mark_pending_items_failed
+            linked_gid = (_get_tracked_task(tracker_id) or {}).get("batch_group_id")
+            if linked_gid:
+                mark_pending_items_failed(linked_gid)
+        except Exception as e:
+            init.logger.warn(f"转入后台重试失败: {e}")
+        if reaction_targets:
+            schedule_reactions_batch(reaction_targets, REACTION_DONE if succeeded else REACTION_ERROR)
 
 
-def _download_tasks_batch_impl(links, selected_path, user_id, custom_folder_name=""):
+def _download_tasks_batch_impl(links, selected_path, user_id, custom_folder_name="", tracker_id=None, origin_message_id=None):
     """批量下载任务的实际实现（内部函数）"""
     from app.utils.message_queue import add_task_to_queue
     from app.core.batch_task_manager import (
@@ -1234,24 +1355,31 @@ def _download_tasks_batch_impl(links, selected_path, user_id, custom_folder_name
     )
 
     total_count = len(links)
+    task_created_at = int(time.time())
     init.logger.info(f"开始执行批量下载任务实现，共 {total_count} 个任务")
 
     # === 批量任务管理 ===
     batch_group_id = None
     final_folder_name = custom_folder_name
 
-    # 如果是批量任务（>1个链接），创建批量任务记录
-    if total_count > 1:
-        # 如果没有自定义文件夹名，生成默认名称
-        if not custom_folder_name:
-            final_folder_name = generate_batch_folder_name(total_count)
-            init.logger.info(f"🎯 生成默认批量任务文件夹名: {final_folder_name}")
+    # 批量任务（>1个链接）且没有自定义文件夹名时，生成默认名称
+    if total_count > 1 and not custom_folder_name:
+        final_folder_name = generate_batch_folder_name(total_count)
+        init.logger.info(f"🎯 生成默认批量任务文件夹名: {final_folder_name}")
 
-        # 创建批量任务组
-        batch_group_id = create_batch_task_group(final_folder_name, selected_path, total_count)
+    # 所有对话任务（含单链接）统一创建任务组记录：用于任务队列展示与后台 2 倍退避自动重试
+    batch_group_id = create_batch_task_group(
+        final_folder_name if total_count > 1 else "",
+        selected_path,
+        total_count,
+        chat_id=user_id,
+        origin_message_id=origin_message_id,
+    )
 
-        # 保存批量任务项
-        save_batch_task_items(batch_group_id, links)
+    # 保存任务项
+    save_batch_task_items(batch_group_id, links)
+    if tracker_id:
+        update_task(tracker_id, batch_group_id=batch_group_id)
 
     # 如果有文件夹名且链接数>1,创建文件夹
     actual_download_path = selected_path
@@ -1385,136 +1513,140 @@ def _download_tasks_batch_impl(links, selected_path, user_id, custom_folder_name
     except Exception as e:
         init.logger.warn(f"获取提交前文件列表失败: {e}")
 
-    # 第二步：初始等待10秒
-    initial_wait = 10
-    init.logger.info(f"已提交 {len(submitted_tasks)} 个任务，等待 {initial_wait} 秒后开始检查状态...")
+    # 第二步：短暂初始等待（3秒），让 115 秒传/热种任务第一时间出结果
+    from app.utils.poll_scheduler import (
+        AdaptivePollController,
+        INITIAL_WAIT_SECONDS,
+        DEFAULT_STALL_TIMEOUT_SECONDS,
+    )
+
+    initial_wait = INITIAL_WAIT_SECONDS
+    init.logger.info(f"已提交 {len(submitted_tasks)} 个任务，等待 {initial_wait:.0f} 秒后开始按需轮询状态...")
     time.sleep(initial_wait)
 
-    # 第三步：轮询检查任务状态，间隔递增（10s, 20s, 30s, 40s, 50s, 60s, 60s...）
-    poll_interval = 10  # 起始间隔10秒
-    max_interval = 60   # 最大间隔60秒
-    max_total_time = 3600  # 最长总等待时间1小时
-    total_elapsed = initial_wait
+    # 第三步：按需分页 + 基于 ETA（预计剩余完成时间）自适应轮询 + 10分钟无进度早停
+    submitted_links = [t["link"] for t in submitted_tasks if t["submitted"]]
+    poll_controller = AdaptivePollController(stall_timeout=DEFAULT_STALL_TIMEOUT_SECONDS)
+    max_total_time = 3600  # 最长总等待时间 1 小时（持续有进度时才会拉满）
+    poll_start_ts = time.monotonic() - initial_wait
     poll_round = 0
     all_completed = False
+    early_stopped_stalled = False
     offline_task_status = None
 
-    while total_elapsed < max_total_time:
+    while (time.monotonic() - poll_start_ts) < max_total_time:
         poll_round += 1
+        total_elapsed = int(time.monotonic() - poll_start_ts)
         init.logger.info(f"第 {poll_round} 次检查任务状态（已等待 {total_elapsed}秒）...")
 
         try:
             start_time = time.time()
-            offline_task_status = init.openapi_115.get_offline_tasks()
+            # 按需分页查询：命中本批链接立即停翻页（通常仅 1 次 API 请求）
+            offline_task_status = init.openapi_115.get_offline_tasks_for_links(
+                submitted_links,
+                use_cache=(poll_round > 1),
+            )
             elapsed = time.time() - start_time
-            init.logger.info(f"获取任务列表耗时: {elapsed:.2f}秒，返回 {len(offline_task_status) if offline_task_status else 0} 个任务")
+            init.logger.info(f"按需获取任务列表耗时: {elapsed:.2f}秒，返回 {len(offline_task_status) if offline_task_status else 0} 个任务")
         except Exception as e:
             init.logger.error(f"获取离线任务状态时出错: {e}")
             offline_task_status = None
 
-        if not offline_task_status:
+        if offline_task_status is None:
             init.logger.error("无法获取离线任务状态")
             if poll_round == 1:  # 第一次就失败才报错
-                add_task_to_queue(user_id, f"{init.IMAGE_PATH}/male023.png",
-                                 message="❌ 无法获取离线任务状态，请稍后手动检查")
+                add_task_to_queue(
+                    user_id,
+                    f"{init.IMAGE_PATH}/male023.png",
+                    message="❌ 无法获取离线任务状态，请稍后手动检查",
+                    reply_to_message_id=origin_message_id,
+                )
                 return
             else:
-                # 后续轮询失败，使用上一次的结果
                 break
 
-        # 检查所有提交的任务是否都已完成
+        # 构建 url -> task 索引，避免 O(N*M) 遍历
+        cloud_by_url = {
+            t.get('url'): t for t in offline_task_status if isinstance(t, dict) and t.get('url')
+        }
+
+        # 检查所有提交的任务是否都已完成，同时收集未完成任务的实时百分比用于 ETA 计算
         init.logger.info(f"开始检查 {len(submitted_tasks)} 个提交任务的状态...")
         completed_count = 0
         processing_count = 0
+        active_percents = {}
+
         for task_info in submitted_tasks:
             if not task_info["submitted"]:
                 continue
 
             link = task_info["link"]
-            task_found = False
-            for task in offline_task_status:
-                if task.get('url') == link:
-                    task_found = True
-                    task_status = task.get('status')
-                    task_percent = task.get('percentDone')
-                    task_name = task.get('name', 'unknown')
+            task = cloud_by_url.get(link)
+            if task is not None:
+                task_status = task.get('status')
+                task_percent = task.get('percentDone') or 0
+                task_name = task.get('name', 'unknown')
 
-                    # status=2表示完成，status=1表示下载中，status=-1表示失败
-                    # 关键修复：percentDone=100时也视为完成（即使status还是1）
-                    if task_percent == 100:
-                        completed_count += 1
-                    elif task_status == -1:
-                        completed_count += 1  # 失败也算完成
-                    else:
-                        processing_count += 1
-                        # 只记录还在下载中的任务（减少日志）
-                        if poll_round == 1 or processing_count <= 5:  # 第一轮或前5个
-                            init.logger.info(f"[下载中] {task_name}: {task_percent}%")
-                    break
-
-            # 如果在列表中没找到，可能已经被清理或失败了
-            if not task_found:
-                init.logger.warn(f"任务未找到（可能已被清理）: {link[:50]}...")
+                # status=2 或 percentDone=100 视为完成；status=-1 视为失败
+                if task_percent == 100 or task_status == 2:
+                    completed_count += 1
+                    if tracker_id:
+                        update_task_item(tracker_id, task_info["index"], name=task_name, status="success", percent=100)
+                elif task_status == -1:
+                    completed_count += 1
+                    if tracker_id:
+                        update_task_item(tracker_id, task_info["index"], name=task_name, status="failed", percent=task_percent, error="115离线失败")
+                else:
+                    processing_count += 1
+                    active_percents[link] = float(task_percent)
+                    if tracker_id:
+                        update_task_item(tracker_id, task_info["index"], name=task_name, status="running", percent=task_percent)
+                    if poll_round == 1 or processing_count <= 5:
+                        init.logger.info(f"[下载中] {task_name}: {task_percent}%")
+            else:
+                init.logger.warn(f"任务未在云端列表中找到（可能已完成被清理或已失效）: {link[:50]}...")
                 completed_count += 1
 
-        submitted_count = len([t for t in submitted_tasks if t['submitted']])
+        submitted_count = len(submitted_links)
         init.logger.info(f"进度: 已完成 {completed_count}/{submitted_count}, 下载中 {processing_count}/{submitted_count}")
+        if tracker_id:
+            update_task(tracker_id, stage=f"轮询离线状态 ({completed_count}/{submitted_count})")
 
-        # 如果所有任务都已完成或失败，退出轮询
-        if completed_count >= submitted_count:
+        # 如果所有任务都已完成或失败，立刻退出轮询
+        if completed_count >= submitted_count or not active_percents:
             all_completed = True
             init.logger.info("所有任务已完成，停止轮询")
             break
 
-        # 计算下一次检查的等待时间（递增10秒，最大60秒）
-        current_wait = min(poll_interval * poll_round, max_interval)
-
-        # 检查是否会超过最大总时间
-        if total_elapsed + current_wait >= max_total_time:
-            init.logger.warn(f"即将达到最大等待时间（{max_total_time}秒），进行最后一次检查")
+        # 根据 ETA 与停滞时长计算下次检查等待时间
+        current_wait, should_early_stop, poll_reason = poll_controller.next_wait(active_percents)
+        if should_early_stop:
+            early_stopped_stalled = True
+            init.logger.warn(f"⏸️ 触发停滞早停：{poll_reason}，提前结束等待并转入后台重试")
             break
 
-        init.logger.info(f"还有 {submitted_count - completed_count} 个任务未完成，等待 {current_wait} 秒后继续检查...")
-        time.sleep(current_wait)
-        total_elapsed += current_wait
+        total_elapsed = time.monotonic() - poll_start_ts
+        if total_elapsed + current_wait >= max_total_time:
+            init.logger.warn(f"即将达到最大等待时间（{max_total_time}秒），停止轮询")
+            break
 
-    init.logger.info(f"轮询结束，all_completed={all_completed}, total_elapsed={total_elapsed}秒")
+        init.logger.info(f"还有 {processing_count} 个任务未完成（{poll_reason}），等待 {current_wait:.0f} 秒后继续检查...")
+        time.sleep(current_wait)
+
+    total_elapsed = int(time.monotonic() - poll_start_ts)
+    init.logger.info(f"轮询结束，all_completed={all_completed}, early_stopped_stalled={early_stopped_stalled}, total_elapsed={total_elapsed}秒")
 
     if not all_completed:
-        init.logger.warn(f"达到最大等待时间({total_elapsed}秒)，仍有任务未完成，将处理当前状态的任务")
+        init.logger.warn(f"轮询提前/超时结束({total_elapsed}秒)，仍有任务未完成，将汇总已完成项并把未完成项交由后台自动重试")
 
     # 使用最后一次获取的任务状态
-    if not offline_task_status:
+    if offline_task_status is None:
         init.logger.error("无任务状态可用，退出处理")
         return
 
-    # 第四步：批量处理每个任务的结果
+    # 第四步：批量处理每个任务的结果（不再发送重复的旧版"正在进行的进度清单"消息，统一由最终完成通知汇报）
     successful_downloads = []  # 记录成功下载的资源
-    task_results = []  # 记录所有任务结果用于进度显示
-    progress_message_id = None  # 进度消息的message_id
-
-    # 对于批量下载(>=2个任务)，发送一个初始进度消息
-    if total_count >= 2:
-        try:
-            import asyncio
-            from telegram import Bot
-
-            # 创建同步Bot实例（在线程中使用）
-            bot = Bot(token=init.get_bot_token())
-            initial_message = format_batch_progress_message(total_count, [])
-
-            # 使用同步方式发送消息（因为在ThreadPoolExecutor线程中）
-            import nest_asyncio
-            nest_asyncio.apply()
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            sent_message = loop.run_until_complete(bot.send_message(chat_id=user_id, text=initial_message))
-            progress_message_id = sent_message.message_id
-            loop.close()
-
-            init.logger.info(f"已创建批量下载进度消息，message_id: {progress_message_id}")
-        except Exception as e:
-            init.logger.error(f"创建进度消息失败: {e}")
+    task_results = []  # 记录所有任务结果用于统计与错误日志生成
 
     # 第一阶段：检查所有任务的下载状态
     init.logger.info("第一阶段：检查所有任务的下载状态...")
@@ -1628,19 +1760,26 @@ def _download_tasks_batch_impl(links, selected_path, user_id, custom_folder_name
                 "name": resource_name,
                 "link": link
             })
+            if tracker_id:
+                update_task_item(tracker_id, task_index, name=resource_name or None, status="success", percent=100)
 
             # 如果是批量任务，更新批量任务状态
             if batch_group_id:
                 from app.core.batch_task_manager import update_task_item_status
                 update_task_item_status(link, batch_group_id, 'success', resource_name)
         else:
-            # 失败的任务直接添加到重试列表
-            title = resource_name if resource_name else f"未知资源_{task_index}"
+            # 失败的任务直接添加到重试列表（未提取到文件名时使用 yyyyMMDDHHmmss-磁力链接）
+            title = format_retry_task_name(
+                resource_name,
+                link,
+                created_at=task_created_at,
+                link_count=1,
+            )
 
             # 如果是批量任务，更新批量任务状态（标记为failed，等待自动重试）
             if batch_group_id:
                 from app.core.batch_task_manager import update_task_item_status
-                update_task_item_status(link, batch_group_id, 'failed', resource_name)
+                update_task_item_status(link, batch_group_id, 'failed', title)
             else:
                 # 非批量任务，添加到旧的重试列表
                 save_failed_download_to_db(title, link, actual_download_path)
@@ -1656,31 +1795,16 @@ def _download_tasks_batch_impl(links, selected_path, user_id, custom_folder_name
                 "name": resource_name,
                 "link": link
             })
+            if tracker_id:
+                update_task_item(tracker_id, task_index, name=resource_name or None, status="failed", error="离线超时或失败")
 
-        # 更新进度消息（每10个任务更新一次，或最后一个任务）
-        if total_count >= 2 and progress_message_id and (len(task_results) % 10 == 0 or len(task_results) == len(submitted_tasks)):
-            try:
-                import asyncio
-                from telegram import Bot
-                bot = Bot(token=init.get_bot_token())
-                updated_message = format_batch_progress_message(total_count, task_results)
+        # 实时同步任务队列统计（不再重复发送或编辑旧版进度消息）
+        if tracker_id and (len(task_results) % 10 == 0 or len(task_results) == len(submitted_tasks)):
+            done_cnt = len([t for t in task_results if t.get("status") == "success"])
+            fail_cnt = len([t for t in task_results if t.get("status") == "failed"])
+            update_task(tracker_id, completed=done_cnt, failed=fail_cnt, stage="整理离线结果")
 
-                # 使用同步方式更新消息
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(bot.edit_message_text(
-                    chat_id=user_id,
-                    message_id=progress_message_id,
-                    text=updated_message
-                ))
-                loop.close()
-
-                init.logger.info(f"已更新进度消息 ({len(task_results)}/{len(submitted_tasks)})")
-            except Exception as e:
-                init.logger.warn(f"更新进度消息失败: {e}")
-
-    # 第一阶段结束：批量清理所有失败的任务（避免在循环中重复调用 API）
-    # 收集所有成功任务的链接，用于后续清理
+    # 第一阶段结束：批量清理离线任务记录（直接复用本轮已获取的 info_hash，避免再次全量拉取云端列表）
     successful_task_links = [d["link"] for d in successful_downloads]
 
     if failed_task_links or (all_completed and successful_task_links):
@@ -1693,27 +1817,32 @@ def _download_tasks_batch_impl(links, selected_path, user_id, custom_folder_name
             init.logger.info(f"所有任务已完成，准备清理 {len(successful_task_links)} 个成功任务")
 
         if cleanup_links:
+            if tracker_id:
+                update_task(tracker_id, stage="清理离线任务记录")
             init.logger.info(f"开始批量清理 {len(cleanup_links)} 个离线任务...")
             try:
-                # 只获取一次离线任务列表
-                offline_tasks_for_cleanup = init.openapi_115.get_offline_tasks()
-                if offline_tasks_for_cleanup:
-                    cleaned_count = 0
-                    failed_link_set = set(failed_task_links)
-                    # 为每个需要清理的链接找到对应的 info_hash 并删除
-                    for link in cleanup_links:
-                        for task in offline_tasks_for_cleanup:
-                            if isinstance(task, dict) and task.get('url') == link:
-                                info_hash = task.get('info_hash', '')
-                                if info_hash:
-                                    delete_source = link in failed_link_set
-                                    init.openapi_115.del_faild_offline_task(info_hash, delete_source_file=delete_source)
-                                    cleaned_count += 1
-                                    init.logger.debug(f"已清理任务: {link[:50]}...")
-                                break
-                    init.logger.info(f"批量清理完成，共清理 {cleaned_count}/{len(cleanup_links)} 个离线任务")
-                else:
-                    init.logger.warn("获取离线任务列表失败，跳过批量清理")
+                hash_by_url = {
+                    t.get('url'): t.get('info_hash', '')
+                    for t in (offline_task_status or [])
+                    if isinstance(t, dict) and t.get('url') and t.get('info_hash')
+                }
+                missing_links = [u for u in cleanup_links if u not in hash_by_url]
+                if missing_links:
+                    refreshed = init.openapi_115.get_offline_tasks_for_links(missing_links, use_cache=False) or []
+                    for t in refreshed:
+                        if isinstance(t, dict) and t.get('url') and t.get('info_hash'):
+                            hash_by_url[t['url']] = t['info_hash']
+
+                cleaned_count = 0
+                failed_link_set = set(failed_task_links)
+                for link in cleanup_links:
+                    info_hash = hash_by_url.get(link)
+                    if info_hash:
+                        delete_source = link in failed_link_set
+                        init.openapi_115.del_faild_offline_task(info_hash, delete_source_file=delete_source)
+                        cleaned_count += 1
+                        init.logger.debug(f"已清理任务: {link[:50]}...")
+                init.logger.info(f"批量清理完成，共清理 {cleaned_count}/{len(cleanup_links)} 个离线任务")
             except Exception as e:
                 init.logger.error(f"批量清理离线任务时出错: {e}")
     else:
@@ -1804,7 +1933,10 @@ def _download_tasks_batch_impl(links, selected_path, user_id, custom_folder_name
 
         # 生成磁力链接TXT文件
         try:
-            txt_success = generate_magnet_txt_file(batch_group_id, actual_download_path, final_folder_name)
+            txt_success = (
+                generate_magnet_txt_file(batch_group_id, actual_download_path, final_folder_name)
+                if total_count > 1 else True
+            )
             if txt_success:
                 init.logger.info(f"📄 批量任务磁力链接TXT文件已生成")
             else:
@@ -1812,28 +1944,37 @@ def _download_tasks_batch_impl(links, selected_path, user_id, custom_folder_name
         except Exception as e:
             init.logger.error(f"❌ 生成磁力链接TXT文件异常: {e}")
 
-    # 第六步：如果有失败任务超过5个，发送错误日志TXT文件
+    # 第六步（合并原第六、七步）：统一只发送 1 条引用原消息的完成结果通知（附带查看本次任务明细按钮）
+    from telegram.helpers import escape_markdown
+    from app.utils.message_queue import send_document_via_bot
+
     failed_count = len([t for t in task_results if t.get("status") == "failed"])
     success_count = len([t for t in task_results if t.get("status") == "success"])
+    success_total = len(final_resource_names)
+    detail_markup = (
+        InlineKeyboardMarkup([[InlineKeyboardButton("🔍 查看本次任务明细", callback_data=f"panel:td:{tracker_id}:1:all")]])
+        if tracker_id
+        else None
+    )
+    stall_hint = "（部分任务连续10分钟无进度已转后台自动重试）" if early_stopped_stalled else ""
 
+    sent_merged_error_doc = False
     if failed_count > 5:
+        error_log_path = None
         try:
             error_log_path = generate_error_log_file(task_results, total_count, custom_folder_name, batch_group_id)
             if error_log_path:
-                # 获取批量任务组信息以获取创建时间
                 created_at = None
                 if batch_group_id:
                     from app.core.batch_task_manager import get_batch_task_group_info
                     group_info = get_batch_task_group_info(batch_group_id)
                     if group_info and 'created_at' in group_info:
-                        # 直接使用数据库的整数时间戳
                         try:
                             created_at = int(group_info['created_at'])
                         except Exception as e:
                             init.logger.warn(f"无法解析创建时间: {group_info['created_at']}, 错误: {e}")
                             created_at = None
 
-                # 生成优化后的消息
                 caption = generate_batch_summary_caption(
                     custom_folder_name or final_folder_name,
                     batch_group_id,
@@ -1842,47 +1983,67 @@ def _download_tasks_batch_impl(links, selected_path, user_id, custom_folder_name
                     total_count,
                     created_at
                 )
+                if actual_download_path:
+                    caption += f"\n📂 保存路径: {actual_download_path}"
+                if stall_hint:
+                    caption += f"\n⏸️ {stall_hint}"
 
-                import asyncio
-                from telegram import Bot
-                bot = Bot(token=init.get_bot_token())
-
-                import nest_asyncio
-                nest_asyncio.apply()
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-
-                with open(error_log_path, 'rb') as f:
-                    loop.run_until_complete(
-                        bot.send_document(
-                            chat_id=user_id,
-                            document=f,
-                            caption=caption
-                        )
-                    )
-                loop.close()
-
-                # 删除临时文件
-                import os
-                os.remove(error_log_path)
-                init.logger.info(f"已发送错误日志文件（{failed_count}个失败任务）")
+                send_document_via_bot(
+                    chat_id=user_id,
+                    file_path=error_log_path,
+                    caption=caption[:1024],
+                    reply_to_message_id=origin_message_id,
+                    reply_markup=detail_markup,
+                )
+                sent_merged_error_doc = True
+                init.logger.info(f"已发送合并后的错误日志与完成汇总（{failed_count}个失败任务，引用原消息={origin_message_id}）")
         except Exception as e:
-            init.logger.error(f"发送错误日志文件失败: {e}")
+            init.logger.error(f"发送合并错误日志文件失败，将回退为文本汇总: {e}")
+        finally:
+            if error_log_path and os.path.exists(error_log_path):
+                try:
+                    os.remove(error_log_path)
+                except Exception:
+                    pass
 
-    # 第七步：发送下载完成通知
-    if len(final_resource_names) > 0:
-        # 发送完成通知（不再提示"移动到"功能）
+    if not sent_merged_error_doc:
+        safe_folder = escape_markdown(str(custom_folder_name or final_folder_name or ""), version=2)
+        safe_path = escape_markdown(str(actual_download_path or selected_path or ""), version=2)
+
         if total_count > 1:
-            # 批量下载
-            if custom_folder_name:
-                message = f"✅ 批量下载完成！共 {len(final_resource_names)}/{total_count} 个任务成功\n\n📁 已保存到: `{custom_folder_name}`"
+            if success_total == total_count:
+                header = escape_markdown(f"✅ 批量下载完成！共 {success_total}/{total_count} 个任务全部成功", version=2)
+            elif success_total > 0:
+                header = escape_markdown(
+                    f"⚠️ 批量下载完成！成功 {success_total}/{total_count}，失败 {failed_count} 个{stall_hint or '（已加入自动重试队列）'}",
+                    version=2,
+                )
             else:
-                message = f"✅ 批量下载完成！共 {len(final_resource_names)}/{total_count} 个任务成功"
+                header = escape_markdown(
+                    f"❌ 批量下载结束！0/{total_count} 个任务成功（{failed_count} 个未完成任务已加入自动重试队列）{stall_hint}",
+                    version=2,
+                )
+            folder_line = f"\n\n📁 保存路径: `{safe_path}`" if safe_path else (f"\n\n📁 文件夹: `{safe_folder}`" if safe_folder else "")
+            message = f"{header}{folder_line}"
         else:
-            # 单次下载
-            resource_name = final_resource_names[0] if final_resource_names else "未知资源"
-            message = f"✅ 下载完成！\n\n📁 文件名: `{resource_name}`"
-        add_task_to_queue(user_id, None, message=message)
+            if success_total > 0:
+                resource_name = escape_markdown(str(final_resource_names[0]), version=2)
+                header = escape_markdown("✅ 下载完成！", version=2)
+                message = f"{header}\n\n📁 文件名: `{resource_name}`\n📂 保存路径: `{safe_path}`"
+            else:
+                header = escape_markdown(
+                    f"❌ 离线下载超时或失败{stall_hint}，已加入任务队列，将按等待时间翻倍自动重试。",
+                    version=2,
+                )
+                message = f"{header}\n\n📂 目标路径: `{safe_path}`"
+
+        add_task_to_queue(
+            user_id,
+            None,
+            message=message,
+            keyboard=detail_markup,
+            reply_to_message_id=origin_message_id,
+        )
 
 
 def download_task(link, selected_path, user_id, task_index=1, total_tasks=1):
@@ -2115,6 +2276,34 @@ async def handle_batch_move(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ 批量移动失败: {str(e)}")
 
 
+def extract_txt_created_time_str(message) -> str:
+    """
+    提取 TXT 文件消息的创建时间（UTC+8，格式 YYYYMMDD_HHMM）。
+    说明：Telegram Bot API 不透传本地文件系统 ctime，因此优先取转发消息的原始创建时间
+    (forward_origin.date)，若非转发则取该文件消息的上传时间 (message.date)。
+    """
+    from datetime import datetime, timezone, timedelta
+
+    tz_cn = timezone(timedelta(hours=8))
+    dt = None
+    if message is not None:
+        forward_origin = getattr(message, "forward_origin", None)
+        if forward_origin is not None:
+            dt = getattr(forward_origin, "date", None)
+        if dt is None:
+            dt = getattr(message, "forward_date", None)
+        if dt is None:
+            dt = getattr(message, "date", None)
+
+    if isinstance(dt, datetime):
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        dt_cn = dt.astimezone(tz_cn)
+    else:
+        dt_cn = datetime.now(tz_cn)
+    return dt_cn.strftime("%Y%m%d_%H%M")
+
+
 async def handle_txt_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """处理用户发送的 txt 文件"""
     usr_id = update.message.from_user.id
@@ -2124,13 +2313,14 @@ async def handle_txt_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     document = update.message.document
 
-    # 检查文件类型
-    if not document.file_name.endswith('.txt'):
+    # 检查文件类型（兼容大小写 .txt/.TXT）
+    if not document or not (document.file_name or "").lower().endswith('.txt'):
         return
 
     # 检查文件大小（500KB = 512000 bytes）
     if document.file_size > 512000:
         await update.message.reply_text("⚠️ txt 文件大于 500KB，已忽略！")
+        await set_message_reaction_safe(context.bot, update.effective_chat.id, update.message.message_id, REACTION_ERROR)
         return
 
     try:
@@ -2149,10 +2339,11 @@ async def handle_txt_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if not file_content:
             await update.message.reply_text("⚠️ 无法解析 txt 文件编码，请检查文件格式！")
+            await set_message_reaction_safe(context.bot, update.effective_chat.id, update.message.message_id, REACTION_ERROR)
             return
 
-        # 提取文件名（不含扩展名）
-        file_base_name = document.file_name.rsplit('.txt', 1)[0]
+        # 提取文件名（不含扩展名，兼容大小写 .txt/.TXT）
+        file_base_name = document.file_name[:-4] if document.file_name.lower().endswith('.txt') else document.file_name
 
         # 按照粘贴磁力文件的逻辑解析链接（使用统一的链接提取函数）
         lines = file_content.split('\n')
@@ -2161,6 +2352,7 @@ async def handle_txt_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 检查是否有有效链接
         if not valid_links:
             await update.message.reply_text("⚠️ txt 文件中未找到有效的下载链接！")
+            await set_message_reaction_safe(context.bot, update.effective_chat.id, update.message.message_id, REACTION_ERROR)
             return
 
         init.logger.info(f"从 txt 文件 {document.file_name} 中提取到 {len(valid_links)} 个有效链接")
@@ -2179,18 +2371,10 @@ async def handle_txt_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 first_non_link_line = line
                 break
 
-        # 组合文件夹名：文件名 + 首行内容（如果存在）
-        if first_non_link_line:
-            custom_folder_name = f"{file_base_name}{first_non_link_line}"
-        else:
-            # 如果没有首行内容，检查文件名长度
-            if len(file_base_name) < 8:
-                # 文件名不足8个字符，添加时间戳
-                from datetime import datetime
-                timestamp = datetime.now().strftime("%Y%m%d%H%M")
-                custom_folder_name = f"{file_base_name}{timestamp}"
-            else:
-                custom_folder_name = file_base_name
+        # 组合文件夹名：文件名 + 首行内容（如果存在）+ TXT文件创建时间
+        base_folder_name = f"{file_base_name}{first_non_link_line}" if first_non_link_line else file_base_name
+        created_time_suffix = extract_txt_created_time_str(update.message)
+        custom_folder_name = f"{base_folder_name}_{created_time_suffix}"
 
         # 清理文件夹名
         custom_folder_name = sanitize_folder_name(custom_folder_name)
@@ -2199,6 +2383,7 @@ async def handle_txt_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["links"] = valid_links
         context.user_data["custom_folder_name"] = custom_folder_name
         context.user_data["total_links"] = len(valid_links)
+        context.user_data["reaction_targets"] = [(update.effective_chat.id, update.message.message_id)]
 
         init.logger.info(f"txt 文件提取的自定义文件夹名: {custom_folder_name}")
 
@@ -2258,6 +2443,7 @@ async def handle_txt_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         init.logger.error(f"处理 txt 文件失败: {e}", exc_info=True)
+        await set_message_reaction_safe(context.bot, update.effective_chat.id, update.message.message_id, REACTION_ERROR)
         await update.message.reply_text(f"❌ 处理 txt 文件时出错: {str(e)}")
 
 
@@ -2316,17 +2502,6 @@ async def handle_manual_rename(update: Update, context: ContextTypes.DEFAULT_TYP
         # 根据分类获取封面
         cover_url = get_movie_cover(new_resource_name)
         
-        # 检查是否为订阅内容
-        from app.core.subscribe_movie import is_subscribe, update_subscribe
-        if is_subscribe(new_resource_name):
-            # 更新订阅信息
-            update_subscribe(new_resource_name, cover_url, download_url)
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=f"💡订阅影片`{new_resource_name}`已手动下载成功\\！",
-                parse_mode='MarkdownV2'
-            )
-        
         # 通知Emby扫库
         is_noticed = notice_emby_scan_library()
         if is_noticed:
@@ -2365,6 +2540,7 @@ async def handle_manual_rename(update: Update, context: ContextTypes.DEFAULT_TYP
         # 清除重命名数据，结束当前操作
         context.user_data.pop("rename_data", None)
         init.logger.info(f"重命名操作完成：{old_resource_name} -> {new_resource_name}")
+        await set_message_reaction_safe(context.bot, update.effective_chat.id, update.message.message_id, REACTION_DONE)
         
     except Exception as e:
         init.logger.error(f"重命名处理失败: {e}")
@@ -2372,6 +2548,7 @@ async def handle_manual_rename(update: Update, context: ContextTypes.DEFAULT_TYP
             chat_id=update.effective_chat.id,
             text=f"❌ 重命名失败: {str(e)}"
         )
+        await set_message_reaction_safe(context.bot, update.effective_chat.id, update.message.message_id, REACTION_ERROR)
         # 出错时也清除数据，结束当前操作
         context.user_data.pop("rename_data", None)
         
@@ -2418,12 +2595,12 @@ def register_download_handlers(application):
     # 允许用户手动重置保存目录
     application.add_handler(CommandHandler("reset_save_path", reset_save_path_command))
 
-    # 命令形式的下载交互
+    # 命令形式的下载交互（同时支持纯文本、转发图片/视频配文 caption 以及 text_link 实体）
     download_command_handler = ConversationHandler(
         # entry_points=[CommandHandler("dl", start_d_command)],
-         entry_points=[
+        entry_points=[
             MessageHandler(
-                filters.TEXT & filters.Regex(r'(magnet:|ed2k://|ED2K://|thunder://)'),
+                DOWNLOAD_LINK_FILTER & ~filters.COMMAND,
                 start_d_command
             )
         ],
@@ -2435,9 +2612,9 @@ def register_download_handlers(application):
     )
     application.add_handler(download_command_handler)
 
-    # 添加 txt 文件处理器（优先级最高，group=-1）
+    # 添加 txt 文件处理器（优先级高于默认 group=0，同时兼容 text/plain 与 .txt 扩展名）
     application.add_handler(MessageHandler(
-        filters.Document.TXT,
+        filters.Document.TXT | filters.Document.FileExtension("txt"),
         handle_txt_file
     ), group=-1)
 
