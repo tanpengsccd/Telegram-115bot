@@ -21,12 +21,14 @@ var/
 *.egg
 
 # Virtual Environment
+.venv/
 venv/
 ENV/
 
-# IDE
+# IDE & Local AI Tools
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 
@@ -34,9 +36,11 @@ ENV/
 **/config.yaml
 **/user_session.session
 **/db.db
+*.db
 **/115_tokens.json
 tmp/
 *.log
+**/qrcode.png
 images/qrcode.png
 
 

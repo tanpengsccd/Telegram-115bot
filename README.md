@@ -98,15 +98,43 @@ tg_api_hash: 1yh3j4k9dsk0fj3jdufnwrhf62j1k33f
 ### 重要提醒
 
 ⚠️ **同步功能警告**：`/sync` 命令会**删除目标目录下的所有文件**，包括元数据。大规模同步操作可能触发 115 网盘风控机制，请谨慎使用！
-## 调试
-### 安装 uv
+## 本地调试
+
+### 1. 准备 Python 虚拟环境（Python 3.12+ / 3.13）
+
+方式一（使用 `uv`，推荐）：
+```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
-### 使用虚拟环境
 uv venv
-### 虚拟环境安装依赖
 uv pip install -r requirements.txt
-### 启动 
-source .venv/bin/activate && PYTHONPATH="/root/Telegram-115bot/app:/root/Telegram-115bot/app/utils:/root/Telegram-115bot/app/core:/root/Telegram-115bot/app/handlers:/root/Telegram-115bot" python app/115bot.py
+```
+
+方式二（使用标准库 `venv` + `pip`）：
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+```
+
+### 2. 准备配置文件
+```bash
+cp config/config.yaml.example config/config.yaml
+# 按需填写 bot_token、allowed_user、115_app_id 等配置（切勿提交 config/config.yaml 等敏感文件）
+```
+
+### 3. 前台启动与代理配置
+项目启动时已自动补齐 `app` 及子模块路径，直接运行即可；若服务器无法直连 Telegram API，请配置代理环境变量，并将 115 域名加入 `NO_PROXY`：
+```bash
+export HTTP_PROXY="http://127.0.0.1:<代理端口>"
+export HTTPS_PROXY="http://127.0.0.1:<代理端口>"
+export NO_PROXY="localhost,127.0.0.1,::1,proapi.115.com,passportapi.115.com,qrcodeapi.115.com"
+
+.venv/bin/python app/115bot.py
+```
+
+### 4. 日志排查与重新授权
+- 启动前可先用 `curl -I --max-time 5 -x http://127.0.0.1:<代理端口> https://api.telegram.org` 验证代理连通性。
+- 实时查看日志：`tail -f config/115bot.log`。
+- 若 115 授权过期或被解除，机器人会降级继续运行，在 Telegram 发送 `/auth` 重新扫码授权即可恢复。
 
 ## 许可证
 ```
