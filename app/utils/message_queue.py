@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 
+import os
 import asyncio
 import init
 from telegram import Bot
+from telegram.request import HTTPXRequest
 
 # 全局消息队列（延迟初始化）
 message_queue = None
@@ -42,8 +44,17 @@ async def queue_worker(loop, token):
     if message_queue is None:
         message_queue = asyncio.Queue()
 
-    # bot
-    bot = Bot(token=token)
+    # bot：proxy仅在配置了HTTP_PROXY/HTTPS_PROXY时生效；keepalive_expiry避免空闲连接复用报502
+    import httpx
+    proxy = (os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY") or "").strip() or None
+    request = HTTPXRequest(
+        connection_pool_size=8,
+        proxy=proxy,
+        connect_timeout=10,
+        pool_timeout=10,
+        httpx_kwargs={"limits": httpx.Limits(max_keepalive_connections=8, max_connections=16, keepalive_expiry=15.0)},
+    )
+    bot = Bot(token=token, request=request)
     init.logger.info("消息队列线程启动成功！")
     while True:
         retry_count = 0  # 在try块外初始化retry_count
@@ -98,13 +109,17 @@ async def queue_worker(loop, token):
             
             # 根据是否有图片和键盘选择发送方式
             if post_url:
-                # 发送图片消息
+                # 发送图片消息（显式超时避免长连接卡死）
                 await bot.send_photo(
                     chat_id=sub_user,
                     photo=post_url,
                     caption=message,
                     parse_mode="MarkdownV2",
-                    reply_markup=keyboard
+                    reply_markup=keyboard,
+                    read_timeout=30,
+                    write_timeout=30,
+                    connect_timeout=10,
+                    pool_timeout=10
                 )
             else:
                 # 发送纯文本消息
@@ -112,7 +127,11 @@ async def queue_worker(loop, token):
                     chat_id=sub_user,
                     text=message,
                     parse_mode="MarkdownV2",
-                    reply_markup=keyboard
+                    reply_markup=keyboard,
+                    read_timeout=30,
+                    write_timeout=30,
+                    connect_timeout=10,
+                    pool_timeout=10
                 )
                 
             init.logger.info(f"消息已发送至 {sub_user}")
@@ -123,7 +142,11 @@ async def queue_worker(loop, token):
         except Exception as e:
             # 处理发送失败的情况
             error_msg = str(e)
-            init.logger.warn(f"队列任务处理失败 (尝试 {retry_count + 1}/3): {error_msg}")
+            is_timeout = "Timed out" in error_msg or "TimeoutError" in error_msg
+            if is_timeout:
+                init.logger.warn(f"消息发送超时 (尝试 {retry_count + 1}/3): {error_msg}，但消息可能已成功发送")
+            else:
+                init.logger.warn(f"队列任务处理失败 (尝试 {retry_count + 1}/3): {error_msg}")
 
             try:
                 # 检查是否为不可重试的错误

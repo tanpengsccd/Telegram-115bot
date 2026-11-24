@@ -4,6 +4,7 @@ import base64
 import hashlib
 import re
 import sys
+import threading
 current_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 parent_dir = os.path.dirname(current_dir)
 sys.path.append(parent_dir)
@@ -81,7 +82,8 @@ class OpenAPI_115:
         self.access_token = ""
         self.refresh_token = ""
         self.base_url = "https://proapi.115.com"
-        # 速率限制器：1请求/秒
+        # 速率限制器：1请求/秒（加锁确保多线程安全）
+        self._rate_limit_lock = threading.Lock()
         self._last_request_time = 0
         self._rate_limit_interval = 1.0  # 秒
         self.get_token()  # 初始化时获取token
@@ -90,7 +92,7 @@ class OpenAPI_115:
         if not self.refresh_token or not self.access_token:
             if not os.path.exists(init.TOKEN_FILE):
                 app_id = init.bot_config.get('115_app_id')
-                if app_id and app_id.lower() != "your_115_app_id":
+                if app_id and str(app_id).lower() != "your_115_app_id":
                     init.logger.info("正在进入PKCE授权流程，获取refresh_token...")
                     self.auth_pkce(init.get_primary_user(), app_id)
                 else:
@@ -112,7 +114,8 @@ class OpenAPI_115:
         
     def auth_pkce(self, sub_user, app_id):
         header = {
-            "Content-Type": "application/x-www-form-urlencoded"
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": init.USER_AGENT
         }
         verifier, challenge = self.get_challenge()
         data = {
@@ -164,11 +167,16 @@ class OpenAPI_115:
                     init.logger.info("二维码已失效...")
                     break
                 else:
+                    status_data = res.get('data') if isinstance(res, dict) else None
+                    if not isinstance(status_data, dict) or status_data.get('status') is None:
+                        init.logger.info("等待扫码...")
+                        time.sleep(2)
+                        continue
                     # 1.扫码成功，等待确认
-                    if res['data']['status'] == 1:
+                    if status_data['status'] == 1:
                         time.sleep(1)
                         continue
-                    elif res['data']['status'] == 2:
+                    elif status_data['status'] == 2:
                         # 2.扫码成功，获取access_token
                         init.logger.info("二维码扫码成功，正在获取access_token...")
                         time.sleep(1)
@@ -186,23 +194,36 @@ class OpenAPI_115:
                             break
               
                         
+    def _load_token_from_file(self):
+        if os.path.exists(init.TOKEN_FILE):
+            try:
+                with open(init.TOKEN_FILE, 'r', encoding='utf-8') as f:
+                    tokens = json.load(f)
+                    return tokens.get('access_token', ''), tokens.get('refresh_token', '')
+            except Exception as e:
+                init.logger.warn(f"读取Token文件失败: {e}")
+        return "", ""
+
     def refresh_access_token(self):
+        # 1. 尝试从文件加载最新Token，避免多线程/重新授权后重复刷新旧Token
+        file_access_token, file_refresh_token = self._load_token_from_file()
+        if file_refresh_token and file_refresh_token != self.refresh_token:
+            init.logger.info("发现本地Token文件已更新，加载新Token...")
+            self.access_token = file_access_token
+            self.refresh_token = file_refresh_token
+            return True
+
         if not self.refresh_token:
-            if not os.path.exists(init.TOKEN_FILE):
+            if not file_refresh_token:
                 init.logger.warn("请先进行授权，获取refresh_token！")
                 add_task_to_queue(init.get_primary_user(), f"{init.IMAGE_PATH}/male023.png", "请先进行授权，获取refresh_token！")
                 return False
-            with open(init.TOKEN_FILE, 'r', encoding='utf-8') as f:
-                tokens = json.load(f)
-                # 从文件中读取access_token和refresh_token
-                self.access_token = tokens.get('access_token', '')
-                self.refresh_token = tokens.get('refresh_token', '')
-            if not self.refresh_token:
-                init.logger.warn("Token文件中缺少refresh_token，请重新授权！")
-                return False
+            self.access_token = file_access_token
+            self.refresh_token = file_refresh_token
         
         header = {
-            "Content-Type": "application/x-www-form-urlencoded"
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": init.USER_AGENT
         }
         
         url = "https://passportapi.115.com/open/refreshToken"
@@ -244,17 +265,18 @@ class OpenAPI_115:
         if headers is None:
             headers = self._get_headers()
 
-        # 速率限制：确保请求间隔至少1秒
-        current_time = time.time()
-        if self._last_request_time > 0:  # 不是第一次请求
-            time_since_last_request = current_time - self._last_request_time
-            if time_since_last_request < self._rate_limit_interval:
-                sleep_time = self._rate_limit_interval - time_since_last_request
-                init.logger.debug(f"[Rate Limit] Waiting {sleep_time:.2f}s to respect 1 req/s limit")
-                time.sleep(sleep_time)
+        # 速率限制：确保请求间隔至少1秒（线程安全）
+        with self._rate_limit_lock:
+            current_time = time.time()
+            if self._last_request_time > 0:  # 不是第一次请求
+                time_since_last_request = current_time - self._last_request_time
+                if time_since_last_request < self._rate_limit_interval:
+                    sleep_time = self._rate_limit_interval - time_since_last_request
+                    init.logger.debug(f"[Rate Limit] Waiting {sleep_time:.2f}s to respect 1 req/s limit")
+                    time.sleep(sleep_time)
 
-        # 更新最后请求时间（在请求发出之前更新）
-        self._last_request_time = time.time()
+            # 更新最后请求时间（在请求发出之前更新）
+            self._last_request_time = time.time()
 
         # 提取 URL 路径（用于简洁日志）
         url_path = url.replace(self.base_url, '')
@@ -669,14 +691,48 @@ class OpenAPI_115:
             "file_ids": file_ids
         }
         response = self._make_api_request('POST', url, data=data, headers=self._get_headers())
-        if response['state'] == True:
+        if isinstance(response, dict) and response.get('state') == True:
             init.logger.info(f"文件或目录删除成功: {file_ids}")
             return True
         else:
             init.logger.warn(f"文件或目录删除失败: {response}")
-            if response['code'] == 40140125:
+            if isinstance(response, dict) and response.get('code') == 40140125:
                 return response
-            return None
+            return False
+
+    def _batch_delete_files(self, fid_list, batch_size=100):
+        """分批删除文件，避免单次请求过长，支持失败重试"""
+        if not fid_list:
+            return
+
+        # 去重并保持顺序
+        fid_list = list(dict.fromkeys(str(fid) for fid in fid_list if fid))
+        total_files = len(fid_list)
+        init.logger.info(f"准备分批删除 {total_files} 个文件，每批 {batch_size} 个")
+
+        for i in range(0, total_files, batch_size):
+            batch = fid_list[i:i + batch_size]
+            batch_num = (i // batch_size) + 1
+            total_batches = (total_files + batch_size - 1) // batch_size
+
+            init.logger.info(f"正在执行第 {batch_num}/{total_batches} 批删除操作，共 {len(batch)} 个文件")
+            file_ids = ",".join(batch)
+
+            max_retries = 5
+            for attempt in range(max_retries):
+                result = self.delet_file(file_ids)
+                if result is True:
+                    init.logger.info(f"第 {batch_num} 批删除成功")
+                    break
+                if attempt < max_retries - 1:
+                    sleep_time = (attempt + 1) * 3
+                    init.logger.warn(f"第 {batch_num} 批删除失败，{sleep_time}秒后进行第 {attempt + 2} 次重试...")
+                    time.sleep(sleep_time)
+                else:
+                    init.logger.error(f"第 {batch_num} 批删除在 {max_retries} 次尝试后最终失败: {result}")
+
+            if i + batch_size < total_files:
+                time.sleep(2)
         
     @handle_token_expiry
     def delete_single_file(self, path):
@@ -1103,8 +1159,7 @@ class OpenAPI_115:
                 init.logger.info(f"[{file['fn']}]已添加到清理列表")
         
         if fid_list:
-            file_ids = ",".join(fid_list)
-            self.delet_file(file_ids)
+            self._batch_delete_files(fid_list)
             
             
     def auto_clean_by_id(self, file_id):
@@ -1142,8 +1197,7 @@ class OpenAPI_115:
                 init.logger.info(f"[{file['fn']}]已添加到清理列表")
         
         if fid_list:
-            file_ids = ",".join(fid_list)
-            self.delet_file(file_ids)
+            self._batch_delete_files(fid_list)
             
     
     def auto_clean_all(self, path):
@@ -1179,8 +1233,7 @@ class OpenAPI_115:
             init.logger.info(f"[{file['fn']}]已添加到清理列表")
         
         if fid_list:
-            file_ids = ",".join(fid_list)
-            self.delet_file(file_ids)
+            self._batch_delete_files(fid_list)
 
     def batch_process_downloads(self, download_path, resource_names):
         """
@@ -1340,10 +1393,9 @@ class OpenAPI_115:
                 # 跳过目录，不要删除子目录（可能包含有效内容）
                 # 如果需要清理空目录，应该在确认目录为空后再删除
 
-        # 一次性删除所有垃圾文件
+        # 分批删除所有垃圾文件
         if all_fid_to_delete:
-            file_ids = ",".join(all_fid_to_delete)
-            self.delet_file(file_ids)
+            self._batch_delete_files(all_fid_to_delete)
             init.logger.info(f"批量清理完成，共删除 {len(all_fid_to_delete)} 个文件/目录")
 
     def find_all_junk_files(self, cid, offset, byte_size, file_list=None, limit=1150):
