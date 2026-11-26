@@ -18,7 +18,7 @@ _PLACEHOLDER_NAME_RE = re.compile(
 
 
 def extract_real_filename_from_link(link: str) -> str:
-    """Only extract an explicit filename from ed2k or magnet dn= parameter (not a bare BTIH hash)."""
+    """Only extract an explicit filename from ed2k, magnet dn=, or .torrent URL path (not a bare BTIH hash)."""
     if not link:
         return ""
     lower = link.strip().lower()
@@ -34,6 +34,14 @@ def extract_real_filename_from_link(link: str) -> str:
                 return unquote(dn[0].strip())
         except Exception:
             pass
+    elif lower.startswith(("http://", "https://")):
+        try:
+            path = urlparse(link.strip()).path or ""
+            base = path.rsplit("/", 1)[-1].strip()
+            if base.lower().endswith(".torrent"):
+                return unquote(base)
+        except Exception:
+            pass
     return ""
 
 
@@ -44,7 +52,7 @@ def is_valid_extracted_filename(name: Optional[str]) -> bool:
     s = str(name).strip()
     if not s or _PLACEHOLDER_NAME_RE.match(s):
         return False
-    if s.lower().startswith(("magnet:?", "ed2k://", "thunder://")):
+    if s.lower().startswith(("magnet:?", "ed2k://", "thunder://", "http://", "https://")):
         return False
     return True
 
@@ -76,7 +84,7 @@ def _format_created_time_compact(created_at=None) -> str:
     return dt.astimezone(TZ_CN).strftime("%Y%m%d%H%M%S")
 
 
-_LINK_KIND_LABELS = {"magnet": "磁力", "ed2k": "ed2k", "thunder": "迅雷"}
+_LINK_KIND_LABELS = {"magnet": "磁力", "ed2k": "ed2k", "thunder": "迅雷", "torrent": "种子"}
 
 
 def _link_kind(link: str) -> str:
@@ -87,6 +95,8 @@ def _link_kind(link: str) -> str:
         return "ed2k"
     if lower.startswith("thunder://"):
         return "thunder"
+    if lower.startswith(("http://", "https://")) and ".torrent" in lower:
+        return "torrent"
     return "other"
 
 
@@ -151,8 +161,8 @@ def is_fallback_retry_name(name: Optional[str]) -> bool:
         return False
     s = str(name).strip()
     return bool(
-        re.match(r"^\d{14}-(magnet:\?|ed2k://|thunder://)", s, re.IGNORECASE)
-        or re.match(r"^\d{14}\+\d+个(磁力|ed2k|迅雷|链接)$", s)
+        re.match(r"^\d{14}-(magnet:\?|ed2k://|thunder://|https?://)", s, re.IGNORECASE)
+        or re.match(r"^\d{14}\+\d+个(磁力|ed2k|迅雷|种子|链接)$", s)
     )
 
 

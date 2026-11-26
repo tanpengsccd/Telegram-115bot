@@ -339,9 +339,15 @@ def test_exponential_retry_doubling_until_cap():
     try:
         init.DB_FILE = test_db
         from app.utils.sqlitelib import SqlLiteLib
-        from app.utils.bot_settings import set_retry_max_wait_hours, get_retry_max_wait_seconds
+        from app.utils.bot_settings import (
+            set_retry_max_wait_hours,
+            get_retry_max_wait_seconds,
+            is_auto_retry_enabled,
+            set_auto_retry_enabled,
+        )
         btm.initialize_batch_task_tables(reset_sql=False)
         assert get_retry_max_wait_seconds() == 24 * 3600  # default cap 24h
+        assert is_auto_retry_enabled() is False  # auto-retry defaults to OFF
 
         fake_115 = MagicMock()
         fake_115.get_quota_info.return_value = {"count": 1000, "used": 0}
@@ -355,6 +361,16 @@ def test_exponential_retry_doubling_until_cap():
         def _item():
             with SqlLiteLib() as sqlite:
                 return sqlite.query_all("SELECT * FROM batch_task_item WHERE group_id = ?", (gid,))[0]
+
+        # When auto-retry toggle is OFF (default), execute_batch_retry() must be a no-op
+        with patch("app.core.batch_task_retry.time.sleep"):
+            btr.execute_batch_retry()
+        assert fake_115.offline_download_specify_path.call_count == 0
+        assert fake_115.get_offline_tasks_for_links.call_count == 0
+        assert _item()["retry_count"] == 0
+
+        # Enable auto-retry -> doubling backoff runs normally
+        set_auto_retry_enabled(True)
 
         waits = []
         with patch("app.core.batch_task_retry.time.sleep"), \

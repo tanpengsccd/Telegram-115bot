@@ -37,6 +37,18 @@ MAX_TG_LOG_BYTES = 45 * 1024 * 1024   # Telegram Bot API limit is 50MB
 TRUNCATED_LOG_TAIL_BYTES = 10 * 1024 * 1024
 TASK_DETAIL_PAGE_SIZE = 15
 CLOUD_PAGE_DISPLAY_LIMIT = 10
+DEFAULT_PANEL_REFRESH_DEBOUNCE_SEC = 3.0
+
+
+def get_panel_refresh_debounce_sec() -> float:
+    """Return bottom-panel refresh debounce delay in seconds (defaults to 3.0s, matching message merge interval)."""
+    cfg = getattr(init, "bot_config", None) or {}
+    if isinstance(cfg, dict) and "panel_refresh_debounce_sec" in cfg:
+        try:
+            return max(0.0, float(cfg.get("panel_refresh_debounce_sec")))
+        except (TypeError, ValueError):
+            pass
+    return DEFAULT_PANEL_REFRESH_DEBOUNCE_SEC
 
 
 def _ensure_panel_state_map() -> Dict[int, Dict]:
@@ -162,7 +174,12 @@ def extract_quota_reset_info(quota_info: Optional[Dict]) -> List[str]:
     return lines
 
 
-def build_home_panel(page: int = 1, minimal_mode: bool = True, retry_cap_hours: Optional[int] = None) -> Tuple[str, InlineKeyboardMarkup]:
+def build_home_panel(
+    page: int = 1,
+    minimal_mode: bool = True,
+    retry_cap_hours: Optional[int] = None,
+    auto_retry_enabled: Optional[bool] = None,
+) -> Tuple[str, InlineKeyboardMarkup]:
     """Build main persistent bottom panel (Page 1: core actions, Page 2: low-frequency/settings)."""
     page = 2 if page == 2 else 1
     minimal_label = "已开启" if minimal_mode else "已关闭"
@@ -170,7 +187,7 @@ def build_home_panel(page: int = 1, minimal_mode: bool = True, retry_cap_hours: 
     if page == 1:
         text = (
             f"<b>🍿 Telegram-115Bot {BOT_VERSION} 控制面板（第 1/2 页）</b>\n\n"
-            "点击下方按钮执行操作，或直接发送 <b>磁力 / ed2k / 迅雷链接</b>、<b>.txt 链接文件</b> 或 <b>视频</b>。\n"
+            "点击下方按钮执行操作，或直接发送 <b>磁力 / 种子 / ed2k / 迅雷链接</b>、<b>.txt / .csv / .html / .htm / Excel / .torrent 文件</b> 或 <b>视频</b>。\n"
             f"对话极简模式：<b>{minimal_label}</b>（主面板始终保持在最底部）"
         )
         keyboard = [
@@ -188,15 +205,22 @@ def build_home_panel(page: int = 1, minimal_mode: bool = True, retry_cap_hours: 
             ],
         ]
     else:
-        from app.utils.bot_settings import get_retry_max_wait_hours, format_retry_cap_label
+        from app.utils.bot_settings import (
+            get_retry_max_wait_hours,
+            format_retry_cap_label,
+            is_auto_retry_enabled,
+        )
         cap_hours = retry_cap_hours if retry_cap_hours is not None else get_retry_max_wait_hours()
         cap_short = f"{cap_hours}小时" if cap_hours <= 24 else f"{cap_hours // 24}天"
+        auto_retry = is_auto_retry_enabled() if auto_retry_enabled is None else bool(auto_retry_enabled)
+        auto_retry_label = "已开启" if auto_retry else "已关闭"
+        auto_retry_btn = "🔁 自动重试：开启" if auto_retry else "🔁 自动重试：关闭"
         minimal_btn = "✨ 对话极简：开启" if minimal_mode else "✨ 对话极简：关闭"
         text = (
             f"<b>⚙️ Telegram-115Bot {BOT_VERSION} 更多功能（第 2/2 页）</b>\n\n"
             "低频维护与系统设置功能：\n"
             f"• 对话极简模式：<b>{minimal_label}</b>（开启后除日志外只保留最新 1 条反馈消息）\n"
-            f"• 自动重试最长等待：<b>{format_retry_cap_label(cap_hours)}</b>（每次重新添加磁力后等待时间翻倍）"
+            f"• 自动重试机制：<b>{auto_retry_label}</b>（最长等待：{format_retry_cap_label(cap_hours)}）"
         )
         keyboard = [
             [
@@ -208,7 +232,10 @@ def build_home_panel(page: int = 1, minimal_mode: bool = True, retry_cap_hours: 
                 InlineKeyboardButton(minimal_btn, callback_data="panel:toggle_minimal"),
             ],
             [
+                InlineKeyboardButton(auto_retry_btn, callback_data="panel:toggle_auto_retry"),
                 InlineKeyboardButton(f"⏱ 重试上限：{cap_short}", callback_data="panel:retry_cap"),
+            ],
+            [
                 InlineKeyboardButton("⬅️ 上一页", callback_data="panel:page:1"),
             ],
         ]
@@ -231,10 +258,10 @@ def build_help_text() -> str:
         "<b>📥 离线下载与批量任务</b>\n"
         "• <b>直接发送/转发链接</b>：支持 <code>magnet:</code> / <code>ed2k://</code> / <code>thunder://</code>（支持纯文本、图片配文、超链接实体及短时间多条消息合并）\n"
         "• <b>自动创建目录</b>：批量链接文本的首行+尾行非链接文字会自动作为 115 保存文件夹名\n"
-        "• <b>直接发送 .txt 文件</b>（≤500KB）：自动解析全部有效链接，创建文件夹时附加 TXT 时间（<code>_YYYYMMDD_HHMM</code>）\n"
+        "• <b>直接发送链接文档</b>（<code>.txt</code> / <code>.csv</code> / <code>.html</code> / <code>.htm</code> / <code>.xlsx</code> / <code>.xls</code> / <code>.torrent</code>，无 500KB 限制）：自动提取其中的磁力、种子、ed2k、迅雷链接；当匹配链接超过 1 个时，会先回传 <code>原文件名+数量V+时间.txt</code> 供你确认，可直接一键下载至默认文件夹或选其他文件夹，若 30 秒内未操作将自动下载至默认文件夹（可点击「取消倒计时」按钮关闭本次自动下载）\n"
         "• <b>完成引用通知</b>：任务完成后自动发送结果汇总，并直接引用你添加该任务的原消息\n"
         "• <code>/reset_save_path</code> - 重置已记住的默认保存目录，下次下载重新选择分类\n"
-        "• <code>/rl</code> - 直接打开任务队列的「待重试」筛选；未完成的磁力会自动重新添加，每次等待时间翻倍（10分→20分→40分…），直到达到面板第 2 页设置的最长等待上限（默认 24 小时，可选 2/4/8/16 天）仍未完成才标记失败\n\n"
+        "• <code>/rl</code> - 直接打开任务队列的「待重试」筛选；自动重试开关默认关闭，可在面板第 2 页开启（开启时会发送完整说明），开启后未完成的磁力会按 2 倍退避自动重试直到达到最长等待上限（默认 24 小时，可选 2/4/8/16 天）\n\n"
         "<b>🎬 其他功能命令</b>\n"
         "• <code>/av 番号</code> - 自动检索番号磁力并提交离线下载\n"
         "• <code>/sync</code> - 同步指定目录并创建 <code>.strm</code> 软链（⚠️ 会清理目标目录旧文件）\n"
@@ -411,6 +438,7 @@ def _load_queue_groups(limit: int = 200) -> List[Dict]:
                        SUM(CASE WHEN LOWER(i.magnet) LIKE 'magnet:%' THEN 1 ELSE 0 END) AS k_magnet,
                        SUM(CASE WHEN LOWER(i.magnet) LIKE 'ed2k://%' THEN 1 ELSE 0 END) AS k_ed2k,
                        SUM(CASE WHEN LOWER(i.magnet) LIKE 'thunder://%' THEN 1 ELSE 0 END) AS k_thunder,
+                       SUM(CASE WHEN LOWER(i.magnet) LIKE 'http%.torrent%' THEN 1 ELSE 0 END) AS k_torrent,
                        (SELECT magnet FROM batch_task_item WHERE group_id = g.group_id ORDER BY id ASC LIMIT 1) AS first_magnet,
                        (SELECT resource_name FROM batch_task_item WHERE group_id = g.group_id ORDER BY id ASC LIMIT 1) AS first_name
                 FROM batch_task_group g
@@ -440,10 +468,10 @@ def _load_queue_groups(limit: int = 200) -> List[Dict]:
                 rc = row.get("max_rc") or 0
             extracted = row.get("folder_name") or (row.get("first_name") if item_cnt == 1 else None)
             link_kinds = [
-                kind for kind, col in (("magnet", "k_magnet"), ("ed2k", "k_ed2k"), ("thunder", "k_thunder"))
+                kind for kind, col in (("magnet", "k_magnet"), ("ed2k", "k_ed2k"), ("thunder", "k_thunder"), ("torrent", "k_torrent"))
                 if int(row.get(col) or 0) > 0
             ]
-            if item_cnt > sum(int(row.get(c) or 0) for c in ("k_magnet", "k_ed2k", "k_thunder")):
+            if item_cnt > sum(int(row.get(c) or 0) for c in ("k_magnet", "k_ed2k", "k_thunder", "k_torrent")):
                 link_kinds.append("other")
             display_name = format_retry_task_name(
                 extracted,
@@ -478,7 +506,7 @@ def build_tasks_view(filter_key: str = "all") -> Tuple[str, InlineKeyboardMarkup
     - text shows only summary counts (no duplicated task records);
     - every task is an interactive button showing success/total and current attempt number.
     """
-    from app.utils.bot_settings import format_retry_cap_label
+    from app.utils.bot_settings import format_retry_cap_label, is_auto_retry_enabled
 
     fk = _norm_queue_filter(filter_key)
     mem_tasks = list_queue_tasks(limit=20)
@@ -526,7 +554,10 @@ def build_tasks_view(filter_key: str = "all") -> Tuple[str, InlineKeyboardMarkup
         lines.append(f"☁️ 115 云端任务：总计 <b>{cloud_total}</b> 条（首页进行中 <b>{len(running_cloud)}</b> 条）")
     else:
         lines.append("☁️ 115 云端任务：暂无法获取")
-    lines.append(f"⏱ 自动重试：每次重新添加磁力后等待时间翻倍，最长等待 <b>{format_retry_cap_label()}</b>")
+    if is_auto_retry_enabled():
+        lines.append(f"⏱ 自动重试：<b>已开启</b>（每次重新添加磁力后等待时间翻倍，最长 <b>{format_retry_cap_label()}</b>）")
+    else:
+        lines.append("⏸ 自动重试：<b>已关闭</b>（可在面板第 2 页开启，或点任务详情手动重试）")
     lines.append("")
 
     if visible:
@@ -535,7 +566,7 @@ def build_tasks_view(filter_key: str = "all") -> Tuple[str, InlineKeyboardMarkup
         lines.append(f"<i>👇 点击下方任务查看逐条磁力明细、尝试次数与下次重试时间{extra}</i>")
     elif counts["all"] == 0:
         lines.append("<b>💡 下载 / 上传使用说明</b>")
-        lines.append("• <b>离线下载</b>：直接发送/转发 <code>magnet:</code> / <code>ed2k://</code> / <code>thunder://</code> 链接或 <code>.txt</code> 文件（≤500KB）")
+        lines.append("• <b>离线下载</b>：直接发送/转发 <code>magnet:</code> / <code>.torrent</code> / <code>ed2k://</code> / <code>thunder://</code> 链接，或发送 <code>.txt</code> / <code>.csv</code> / <code>.html</code> / <code>.htm</code> / <code>Excel(.xlsx/.xls)</code> / <code>.torrent</code> 文件")
         lines.append("• <b>视频上传</b>：直接转发视频给机器人，选择保存目录即可转存至 115")
     else:
         lines.append(f"🈳 当前筛选（{QUEUE_FILTERS[fk]}）下没有任务")
@@ -594,7 +625,7 @@ def build_batch_group_detail_view(
         get_group_display_name,
         summarize_group_items,
     )
-    from app.utils.bot_settings import format_retry_cap_label
+    from app.utils.bot_settings import format_retry_cap_label, is_auto_retry_enabled
 
     fk = _norm_queue_filter(back)
     back_cb = f"panel:tq:{fk}"
@@ -641,13 +672,16 @@ def build_batch_group_detail_view(
         lines.append(f"• 目录：<code>{html.escape(full_path)}</code>")
     lines.append(f"• 🔄 第 {summary['attempt']} 次尝试任务")
     if summary["failed"]:
-        next_at = summary["next_retry_at"]
-        if next_at and next_at > now_ts:
-            lines.append(f"• ⏰ 下次自动重试：（{_fmt_wait(next_at - now_ts)}后）<code>{_fmt_ts(next_at)}</code>")
+        if is_auto_retry_enabled():
+            next_at = summary["next_retry_at"]
+            if next_at and next_at > now_ts:
+                lines.append(f"• ⏰ 下次自动重试：（{_fmt_wait(next_at - now_ts)}后）<code>{_fmt_ts(next_at)}</code>")
+            else:
+                lines.append("• ⏰ 下次自动重试：即将执行（等待调度器触发）")
+            if summary["current_wait"]:
+                lines.append(f"• ⏱ 本轮等待：{_fmt_wait(summary['current_wait'])}（每次翻倍，最长 {cap_label}）")
         else:
-            lines.append("• ⏰ 下次自动重试：即将执行（等待调度器触发）")
-        if summary["current_wait"]:
-            lines.append(f"• ⏱ 本轮等待：{_fmt_wait(summary['current_wait'])}（每次翻倍，最长 {cap_label}）")
+            lines.append("• ⏸ 自动重试：<b>已关闭</b>（可在面板第 2 页开启，或点击下方「🔄 立即重试」手动执行）")
     elif summary["dead"]:
         lines.append(f"• ⛔ 等待时间已达上限（{cap_label}）仍未完成，已标记失败")
     elif summary["pending"]:
@@ -967,30 +1001,26 @@ def _build_retry_message() -> Tuple[str, InlineKeyboardMarkup]:
 
 
 def build_retry_cap_view() -> Tuple[str, InlineKeyboardMarkup]:
-    """Panel view to choose the retry max-wait cap (24h / 48h / 96h / 192h / 384h=16天)."""
+    """Panel view to toggle auto-retry and choose the retry max-wait cap (24h / 48h / 96h / 192h / 384h=16天)."""
     from app.utils.bot_settings import (
         RETRY_CAP_OPTIONS_HOURS,
-        BASE_RETRY_WAIT_SECONDS,
         get_retry_max_wait_hours,
         format_retry_cap_label,
+        is_auto_retry_enabled,
+        build_retry_wait_chain_str,
     )
     current = get_retry_max_wait_hours()
-    cap_seconds = current * 3600
-    waits = []
-    wait = BASE_RETRY_WAIT_SECONDS
-    while True:
-        waits.append(wait)
-        if wait >= cap_seconds:
-            break
-        wait = min(wait * 2, cap_seconds)
-    chain = " → ".join(_fmt_wait(w) for w in waits)
+    enabled = is_auto_retry_enabled()
+    chain, attempt_count = build_retry_wait_chain_str(current)
+    status_desc = "已开启" if enabled else "已关闭（默认关闭，开启后后台定时执行）"
     text = (
-        "<b>⏱ 自动重试最长等待上限</b>\n\n"
-        f"当前：<b>{format_retry_cap_label(current)}</b>\n\n"
-        "规则：每次重新添加磁力后，等待时间是上一次的 <b>2 倍</b>；"
+        "<b>⏱ 自动重试设置与最长等待上限</b>\n\n"
+        f"• 自动重试开关：<b>{status_desc}</b>\n"
+        f"• 当前最长上限：<b>{format_retry_cap_label(current)}</b>\n\n"
+        "规则：开启自动重试后，每次重新添加磁力等待时间是上一次的 <b>2 倍</b>；"
         "当等待时间翻倍到上限且这一轮仍未完成时，标记为失败并引用原消息通知。\n\n"
-        f"当前设置下的等待序列（共 {len(waits)} 次尝试）：\n<code>{chain}</code>\n\n"
-        "请选择新的上限："
+        f"当前设置下的等待序列（共 {attempt_count} 次尝试）：\n<code>{chain}</code>\n\n"
+        "可切换开关或选择新的上限："
     )
     buttons = [
         InlineKeyboardButton(
@@ -999,7 +1029,15 @@ def build_retry_cap_view() -> Tuple[str, InlineKeyboardMarkup]:
         )
         for h in RETRY_CAP_OPTIONS_HOURS
     ]
-    keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                "⏸ 关闭自动重试" if enabled else "🔁 开启自动重试",
+                callback_data="panel:toggle_auto_retry_inline",
+            )
+        ]
+    ]
+    keyboard.extend([buttons[i:i + 2] for i in range(0, len(buttons), 2)])
     return text, InlineKeyboardMarkup(keyboard)
 
 
@@ -1032,6 +1070,31 @@ async def send_panel_result(
     return sent
 
 
+def _cancel_pending_panel_refresh(state: Dict) -> None:
+    """Cancel any scheduled debounced bottom-panel refresh task for this chat."""
+    task = state.pop("pending_panel_refresh_task", None)
+    if task is not None and not task.done():
+        try:
+            task.cancel()
+        except Exception:
+            pass
+
+
+def _get_panel_lock(state: Dict) -> asyncio.Lock:
+    """Return an asyncio.Lock bound to the current running event loop for this chat."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    lock = state.get("panel_lock")
+    lock_loop = state.get("panel_lock_loop")
+    if lock is None or lock_loop is not loop:
+        lock = asyncio.Lock()
+        state["panel_lock"] = lock
+        state["panel_lock_loop"] = loop
+    return lock
+
+
 async def ensure_bottom_panel(
     bot,
     chat_id: int,
@@ -1041,30 +1104,33 @@ async def ensure_bottom_panel(
 ):
     """Delete previous panel message(s) and post exactly ONE fresh panel at the very bottom."""
     state = get_chat_panel_state(chat_id)
-    if page is not None:
-        state["panel_page"] = 2 if page == 2 else 1
+    _cancel_pending_panel_refresh(state)
+    lock = _get_panel_lock(state)
+    async with lock:
+        if page is not None:
+            state["panel_page"] = 2 if page == 2 else 1
 
-    old_ids = []
-    if state.get("panel_message_id"):
-        old_ids.append(state["panel_message_id"])
-    if extra_old_panel_id and extra_old_panel_id not in old_ids:
-        old_ids.append(extra_old_panel_id)
+        old_ids = []
+        if state.get("panel_message_id"):
+            old_ids.append(state["panel_message_id"])
+        if extra_old_panel_id and extra_old_panel_id not in old_ids:
+            old_ids.append(extra_old_panel_id)
 
-    for old_id in old_ids:
-        deleted = await _safe_delete_message(bot, chat_id, old_id)
-        if not deleted:
-            await clear_message_reaction_safe(bot, chat_id, old_id)
+        for old_id in old_ids:
+            deleted = await _safe_delete_message(bot, chat_id, old_id)
+            if not deleted:
+                await clear_message_reaction_safe(bot, chat_id, old_id)
 
-    text, markup = build_home_panel(page=state["panel_page"], minimal_mode=state["minimal_mode"])
-    sent = await bot.send_message(
-        chat_id=chat_id,
-        text=text,
-        parse_mode="html",
-        disable_web_page_preview=True,
-        reply_markup=markup,
-    )
-    state["panel_message_id"] = sent.message_id if sent and getattr(sent, "message_id", None) else None
-    return sent
+        text, markup = build_home_panel(page=state["panel_page"], minimal_mode=state["minimal_mode"])
+        sent = await bot.send_message(
+            chat_id=chat_id,
+            text=text,
+            parse_mode="html",
+            disable_web_page_preview=True,
+            reply_markup=markup,
+        )
+        state["panel_message_id"] = sent.message_id if sent and getattr(sent, "message_id", None) else None
+        return sent
 
 
 async def refresh_bottom_panel_if_exists(bot, chat_id: int) -> None:
@@ -1074,6 +1140,42 @@ async def refresh_bottom_panel_if_exists(bot, chat_id: int) -> None:
     state = get_chat_panel_state(chat_id)
     if state.get("panel_message_id"):
         await ensure_bottom_panel(bot, chat_id)
+
+
+def schedule_bottom_panel_refresh(bot, chat_id: int, delay: Optional[float] = None) -> Optional[asyncio.Task]:
+    """
+    Debounced bottom-panel refresh: when multiple files arrive within `delay` seconds
+    (defaults to `panel_refresh_debounce_sec`, 3.0s), coalesce them so the control panel
+    is deleted and re-posted at the bottom ONLY ONCE.
+    """
+    if not bot or not chat_id:
+        return None
+    state = get_chat_panel_state(chat_id)
+    if not state.get("panel_message_id"):
+        return None
+
+    wait_sec = get_panel_refresh_debounce_sec() if delay is None else max(0.0, float(delay))
+    _cancel_pending_panel_refresh(state)
+
+    async def _delayed():
+        try:
+            await asyncio.sleep(wait_sec)
+            await refresh_bottom_panel_if_exists(bot, chat_id)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            if init.logger:
+                init.logger.debug(f"延迟刷新底部面板失败 (chat={chat_id}): {e}")
+        finally:
+            if state.get("pending_panel_refresh_task") is asyncio.current_task():
+                state.pop("pending_panel_refresh_task", None)
+
+    try:
+        task = asyncio.create_task(_delayed())
+        state["pending_panel_refresh_task"] = task
+        return task
+    except RuntimeError:
+        return None
 
 
 async def _safe_edit_query_html(
@@ -1260,7 +1362,7 @@ async def handle_panel_callback(update: Update, context: ContextTypes.DEFAULT_TY
     state = get_chat_panel_state(chat_id)
     is_main_panel_action = action in (
         "panel:page:1", "panel:page:2", "panel:home",
-        "panel:toggle_minimal", "panel:help", "panel:status",
+        "panel:toggle_minimal", "panel:toggle_auto_retry", "panel:help", "panel:status",
         "panel:tasks", "panel:log", "panel:retry", "panel:reload",
         "panel:reset_path", "panel:auth", "panel:retry_cap",
     ) or action.startswith("panel:cloud:")
@@ -1288,7 +1390,7 @@ async def handle_panel_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 reposted_panel = True
             return
 
-        # 2. 对话极简开关
+        # 2. 对话极简开关 / 自动重试开关
         if action == "panel:toggle_minimal":
             state["minimal_mode"] = not state["minimal_mode"]
             tip = (
@@ -1299,6 +1401,53 @@ async def handle_panel_callback(update: Update, context: ContextTypes.DEFAULT_TY
             await send_panel_result(context.bot, chat_id, tip)
             await ensure_bottom_panel(context.bot, chat_id, extra_old_panel_id=clicked_msg_id)
             reposted_panel = True
+            return
+
+        if action == "panel:toggle_auto_retry":
+            from app.utils.bot_settings import (
+                is_auto_retry_enabled,
+                set_auto_retry_enabled,
+                build_auto_retry_guide_text,
+            )
+            new_enabled = await asyncio.to_thread(set_auto_retry_enabled, not is_auto_retry_enabled())
+            init.logger.info(f"自动重试机制开关已切换为: {'开启' if new_enabled else '关闭'}")
+            if new_enabled:
+                tip = await asyncio.to_thread(build_auto_retry_guide_text)
+            else:
+                tip = (
+                    "⏸ <b>已关闭自动重试机制</b>\n"
+                    "后台定时任务将暂停自动重新提交未完成的磁力；你仍可在「📥 任务队列」点击任务详情中的「🔄 立即重试」手动执行。"
+                )
+            await send_panel_result(context.bot, chat_id, tip)
+            await ensure_bottom_panel(context.bot, chat_id, extra_old_panel_id=clicked_msg_id)
+            reposted_panel = True
+            return
+
+        if action == "panel:toggle_auto_retry_inline":
+            from app.utils.bot_settings import (
+                is_auto_retry_enabled,
+                set_auto_retry_enabled,
+                build_auto_retry_guide_text,
+            )
+            new_enabled = await asyncio.to_thread(set_auto_retry_enabled, not is_auto_retry_enabled())
+            init.logger.info(f"自动重试机制开关（设置页）已切换为: {'开启' if new_enabled else '关闭'}")
+            cap_text, cap_markup = await asyncio.to_thread(build_retry_cap_view)
+            if new_enabled:
+                guide_text = await asyncio.to_thread(build_auto_retry_guide_text)
+                combined_text = f"{guide_text}\n\n{'─' * 16}\n\n{cap_text}"
+            else:
+                combined_text = (
+                    "⏸ <b>已关闭自动重试机制</b>（后台将暂停自动重试，仍支持任务详情手动重试）。\n\n"
+                    + cap_text
+                )
+            await _safe_edit_query_html(
+                query,
+                combined_text,
+                cap_markup,
+                bot=context.bot,
+                chat_id=chat_id,
+            )
+            await refresh_bottom_panel_if_exists(context.bot, chat_id)
             return
 
         # 3. 帮助 / 账号状态
@@ -1615,9 +1764,8 @@ async def handle_unrecognized_message(update: Update, context: ContextTypes.DEFA
 
     doc = getattr(msg, "document", None)
     if doc:
-        fname = (getattr(doc, "file_name", None) or "").lower()
-        mime = (getattr(doc, "mime_type", None) or "").lower()
-        if fname.endswith(".txt") or mime == "text/plain":
+        from app.utils.file_link_parser import is_supported_link_document
+        if is_supported_link_document(doc):
             return
 
     text = (getattr(msg, "text", None) or "").strip()
@@ -1635,7 +1783,7 @@ async def handle_unrecognized_message(update: Update, context: ContextTypes.DEFA
         doc_name = html.escape(str(getattr(doc, "file_name", None) or "未知文件"))
         feedback = (
             f"⚠️ 暂不支持处理该文件：<code>{doc_name}</code>\n"
-            "目前仅支持发送 <b>.txt</b> 链接文件（≤500KB）或直接转发视频。"
+            "目前支持发送 <b>.txt / .csv / .html / .htm / .xlsx / .xlsm / .xls / .torrent</b> 文件或直接转发视频。"
         )
     elif getattr(msg, "photo", None) or caption:
         feedback = (

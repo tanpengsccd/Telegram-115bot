@@ -16,10 +16,117 @@ import time
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from functools import wraps
+from urllib.parse import unquote
 from app.utils.message_queue import add_task_to_queue
 from app.utils.alioss import upload_file_to_oss
 from telegram.helpers import escape_markdown
 
+
+_MAGNET_BTIH_RE = re.compile(r'xt=urn:btih:([a-zA-Z0-9]+)', re.IGNORECASE)
+_ED2K_RAW_RE = re.compile(r'^ed2k://\|file\|[^|]+\|\d+\|([a-fA-F0-9]{32})(?:\||$)', re.IGNORECASE)
+_ED2K_UNQUOTED_RE = re.compile(r'^ed2k://\|file\|.+\|\d+\|([a-fA-F0-9]{32})(?:\||$)', re.IGNORECASE)
+
+
+class NonRetryableAPIError(Exception):
+    """无需由 handle_token_expiry 重复重试的业务错误（如已处理过的 10008 重复任务错误）。"""
+
+    def __init__(self, message: str, code=None, response=None):
+        super().__init__(message)
+        self.code = code
+        self.response = response
+
+
+def canonical_offline_key(url: str) -> str:
+    """
+    计算离线下载链接的规范化匹配键：
+    - magnet: 提取 BTIH（32位 Base32 自动转为 40位小写十六进制）-> 'btih:<hash>'
+    - ed2k: 提取 32位 MD4 哈希 -> 'ed2k:<md4>'
+    - 其他链接: unquote(url).strip().lower()
+    """
+    if not url or not isinstance(url, str):
+        return ""
+    raw = url.strip()
+    if not raw:
+        return ""
+
+    btih_match = _MAGNET_BTIH_RE.search(raw)
+    if not btih_match:
+        btih_match = _MAGNET_BTIH_RE.search(unquote(raw).strip())
+    if btih_match:
+        btih = btih_match.group(1).strip()
+        if len(btih) == 32 and re.fullmatch(r'[A-Za-z2-7]{32}', btih):
+            try:
+                btih = base64.b32decode(btih.upper()).hex()
+            except Exception:
+                pass
+        return f"btih:{btih.lower()}"
+
+    ed2k_match = _ED2K_RAW_RE.match(raw)
+    if not ed2k_match:
+        ed2k_match = _ED2K_UNQUOTED_RE.match(unquote(raw).strip())
+    if ed2k_match:
+        return f"ed2k:{ed2k_match.group(1).lower()}"
+
+    return unquote(raw).strip().lower()
+
+
+_canonical_offline_key = canonical_offline_key
+
+
+def build_offline_task_index(tasks) -> dict:
+    """
+    为云端离线任务列表建立多级查找索引（优先保留靠前/最新的任务）：
+    exact -> unquoted -> canonical (btih / ed2k md4) -> info_hash (btih 兜底)
+    """
+    exact = {}
+    unquoted = {}
+    canonical = {}
+    by_info_hash = {}
+    for task in (tasks or []):
+        if not isinstance(task, dict):
+            continue
+        url = task.get('url') or ''
+        if url:
+            exact.setdefault(url, task)
+            uq = unquote(url).strip().lower()
+            if uq:
+                unquoted.setdefault(uq, task)
+            ckey = canonical_offline_key(url)
+            if ckey:
+                canonical.setdefault(ckey, task)
+        ih = (task.get('info_hash') or '').strip().lower()
+        if ih:
+            by_info_hash.setdefault(ih, task)
+    return {
+        "exact": exact,
+        "unquoted": unquoted,
+        "canonical": canonical,
+        "info_hash": by_info_hash,
+    }
+
+
+def lookup_offline_task(index: dict, url: str):
+    """按 exact -> unquoted -> canonical -> info_hash 顺序查找匹配的云端离线任务。"""
+    if not index or not url or not isinstance(url, str):
+        return None
+    task = index["exact"].get(url)
+    if task is not None:
+        return task
+    uq = unquote(url).strip().lower()
+    if uq:
+        task = index["unquoted"].get(uq)
+        if task is not None:
+            return task
+    ckey = canonical_offline_key(url)
+    if ckey:
+        task = index["canonical"].get(ckey)
+        if task is not None:
+            return task
+        if ckey.startswith("btih:"):
+            task = index["info_hash"].get(ckey[5:])
+            if task is not None:
+                return task
+    return None
 
 
 def handle_token_expiry(func):
@@ -64,7 +171,9 @@ def handle_token_expiry(func):
                 
                 # 成功或其他情况，直接返回
                 return response
-                
+
+            except NonRetryableAPIError:
+                raise
             except Exception as e:
                 if attempt < max_retries - 1:
                     init.logger.warn(f"API调用失败，正在重试: {e}")
@@ -399,27 +508,251 @@ class OpenAPI_115:
                 return response
             return None
     
+    @staticmethod
+    def _dedupe_offline_urls(urls) -> list:
+        """按规范化键去重离线链接（保序），避免单次批量请求内自身重复触发 10008。"""
+        seen = set()
+        result = []
+        for raw in (urls or []):
+            u = str(raw or "").strip()
+            if not u:
+                continue
+            key = canonical_offline_key(u) or u
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(u)
+        return result
+
+    @staticmethod
+    def _is_offline_task_completed(task) -> bool:
+        if not isinstance(task, dict):
+            return False
+        status = task.get('status')
+        percent = task.get('percentDone') or 0
+        return status == 2 or percent >= 100
+
+    @staticmethod
+    def _is_offline_task_active(task) -> bool:
+        if not isinstance(task, dict):
+            return False
+        if OpenAPI_115._is_offline_task_completed(task):
+            return False
+        return task.get('status') in (0, 1)
+
+    @staticmethod
+    def _extract_duplicate_info_hashes(response) -> list:
+        """从 10008 响应体中提取直接返回的 (info_hash, url) 列表（如有）。"""
+        entries = []
+        if not isinstance(response, dict):
+            return entries
+        top_ih = (response.get('info_hash') or '').strip()
+        if top_ih:
+            entries.append((top_ih, response.get('url') or ''))
+        data = response.get('data')
+        if isinstance(data, dict):
+            ih = (data.get('info_hash') or '').strip()
+            if ih:
+                entries.append((ih, data.get('url') or ''))
+        elif isinstance(data, list):
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                ih = (item.get('info_hash') or '').strip()
+                if ih and (item.get('code') == 10008 or item.get('state') is False or not item.get('state')):
+                    entries.append((ih, item.get('url') or ''))
+        # 按 info_hash 去重保序
+        deduped = []
+        seen_ih = set()
+        for ih, u in entries:
+            if ih not in seen_ih:
+                seen_ih.add(ih)
+                deduped.append((ih, u))
+        return deduped
+
+    def find_offline_tasks_by_urls(self, target_urls) -> dict:
+        """
+        深度分页查找指定链接在 115 云端离线列表中的对应任务（支持规范化 URL / BTIH / ed2k MD4 匹配）。
+        全部目标命中后立即停止翻页。
+
+        Returns:
+            dict[str, dict]: {原始目标URL: 匹配到的云端任务字典}
+        """
+        urls = [str(u).strip() for u in (target_urls or []) if str(u or '').strip()]
+        if not urls:
+            return {}
+        cloud_tasks = self.get_offline_tasks_for_links(urls, max_pages=999, use_cache=False) or []
+        index = build_offline_task_index(cloud_tasks)
+        matched = {}
+        for u in urls:
+            task = lookup_offline_task(index, u)
+            if task is not None:
+                matched[u] = task
+        return matched
+
+    def _handle_duplicate_offline_submit(self, submitted_urls, api_url, wp_path_id, response):
+        """
+        统一处理 115 添加离线任务返回的 code == 10008（任务已存在）错误：
+        1. 若响应携带 info_hash，仅清理任务记录（保留源文件）后重提一次；
+        2. 否则调用 find_offline_tasks_by_urls() 深度定位重复任务：
+           - 单条链接（或整批全部链接）已完成/下载中：保留源文件与记录，直接返回 True；
+           - 存在失败/停滞任务或批量中仍有未提交的新链接：
+             * 失败/停滞任务 delete_source_file=True；
+             * 已完成/下载中任务仅删任务记录 delete_source_file=False；
+             等待 1 秒后重新提交一次；
+        3. 若仍失败，抛出 NonRetryableAPIError，防止 @handle_token_expiry 重复空转。
+        """
+        urls = [u for u in (submitted_urls or []) if u]
+        data = {
+            "urls": "\n".join(urls),
+            "wp_path_id": wp_path_id,
+        }
+
+        direct_entries = self._extract_duplicate_info_hashes(response)
+        if direct_entries:
+            init.logger.warn(
+                f"检测到重复任务（code: 10008），响应包含 {len(direct_entries)} 个 info_hash，清理记录后重新提交"
+            )
+            deleted_any = False
+            for ih, dup_url in direct_entries:
+                init.logger.info(f"删除重复任务记录（保留源文件）info_hash={ih}, url={dup_url[:80]}")
+                if self.del_faild_offline_task(ih, delete_source_file=False):
+                    deleted_any = True
+            if not deleted_any:
+                raise NonRetryableAPIError(
+                    f"任务已存在且删除失败: {response.get('message', '任务已存在')}",
+                    code=10008,
+                    response=response,
+                )
+            time.sleep(1)
+            retry_response = self._make_api_request('POST', api_url, data=data, headers=self._get_headers())
+            if isinstance(retry_response, dict) and retry_response.get('state') == True:
+                self.invalidate_offline_page1_cache()
+                init.logger.info(f"清理重复任务后重新提交成功（共 {len(urls)} 个）")
+                return True
+            if isinstance(retry_response, dict) and retry_response.get('code') == 40140125:
+                return retry_response
+            err_msg = retry_response.get('message', str(retry_response)) if isinstance(retry_response, dict) else str(retry_response)
+            err_code = retry_response.get('code') if isinstance(retry_response, dict) else None
+            init.logger.error(f"重新提交失败: {err_msg}")
+            raise NonRetryableAPIError(f"重新提交失败: {err_msg}", code=err_code, response=retry_response)
+
+        init.logger.warn(
+            f"检测到重复任务（code: 10008）但响应无 info_hash，深度查找 {len(urls)} 个链接对应的云端任务..."
+        )
+        matched_map = self.find_offline_tasks_by_urls(urls)
+        if not matched_map:
+            init.logger.warn(f"code 10008 但未在云端离线列表中找到匹配任务: {response}")
+            raise NonRetryableAPIError(
+                response.get('message', '任务已存在'),
+                code=10008,
+                response=response,
+            )
+
+        completed_or_active = []
+        failed_or_stalled = []
+        unmatched = []
+        for u in urls:
+            task = matched_map.get(u)
+            if task is None:
+                unmatched.append(u)
+            elif self._is_offline_task_completed(task) or self._is_offline_task_active(task):
+                completed_or_active.append((u, task))
+            else:
+                failed_or_stalled.append((u, task))
+
+        # 单链接或整批所有链接在云端均已完成/下载中：直接保留源文件并返回 True，让上层状态检查接管
+        if not failed_or_stalled and not unmatched:
+            init.logger.info(
+                f"重复任务（共 {len(completed_or_active)} 个）在云端均已完成或正在下载，保留源文件并直接返回成功"
+            )
+            return True
+
+        # 需要重新提交（失败/停滞任务，或批量中还有未提交的新链接）
+        delete_plan = {}  # {info_hash: delete_source_file}
+        for _, task in completed_or_active:
+            ih = (task.get('info_hash') or '').strip()
+            if ih:
+                delete_plan[ih] = False  # 已完成/下载中：仅删任务记录，严禁删源文件
+        for _, task in failed_or_stalled:
+            ih = (task.get('info_hash') or '').strip()
+            if ih and ih not in delete_plan:
+                delete_plan[ih] = True   # 失败/停滞：清理残留任务与临时文件
+
+        if not delete_plan:
+            init.logger.warn(f"匹配到重复任务但均缺少 info_hash，无法清理重提: {response}")
+            raise NonRetryableAPIError(
+                response.get('message', '任务已存在'),
+                code=10008,
+                response=response,
+            )
+
+        deleted_any = False
+        for ih, del_source in delete_plan.items():
+            init.logger.info(
+                f"清理云端重复离线任务 info_hash={ih}, delete_source_file={del_source}"
+            )
+            if self.del_faild_offline_task(ih, delete_source_file=del_source):
+                deleted_any = True
+
+        if not deleted_any:
+            init.logger.error("清理重复离线任务失败，放弃重新提交")
+            raise NonRetryableAPIError(
+                f"任务已存在且删除失败: {response.get('message', '任务已存在')}",
+                code=10008,
+                response=response,
+            )
+
+        init.logger.info("已清理重复离线任务，等待 1 秒后重新提交...")
+        time.sleep(1)
+        retry_response = self._make_api_request('POST', api_url, data=data, headers=self._get_headers())
+        if isinstance(retry_response, dict) and retry_response.get('state') == True:
+            self.invalidate_offline_page1_cache()
+            init.logger.info(f"清理重复任务后重新提交成功（共 {len(urls)} 个）")
+            return True
+        if isinstance(retry_response, dict) and retry_response.get('code') == 40140125:
+            return retry_response
+
+        err_msg = retry_response.get('message', str(retry_response)) if isinstance(retry_response, dict) else str(retry_response)
+        err_code = retry_response.get('code') if isinstance(retry_response, dict) else None
+        init.logger.error(f"清理重复任务后重新提交失败: {err_msg}")
+        raise NonRetryableAPIError(f"重新提交失败: {err_msg}", code=err_code, response=retry_response)
+
     @handle_token_expiry
     def offline_download_specify_path(self, download_url, save_path):
         url = f"{self.base_url}/open/offline/add_task_urls"
         file_info = self.get_file_info(save_path)
         if not file_info:
             self.create_dir_recursive(save_path)
-        
+            file_info = self.get_file_info(save_path)
+        if not file_info:
+            raise Exception(f"获取保存目录信息失败: {save_path}")
+
+        raw_urls = [u.strip() for u in str(download_url or "").splitlines() if u.strip()]
+        submitted_urls = self._dedupe_offline_urls(raw_urls)
+        urls_string = "\n".join(submitted_urls) if submitted_urls else str(download_url or "")
+
         data = {
-            "urls": download_url,
+            "urls": urls_string,
             "wp_path_id": file_info['file_id']
         }
         response = self._make_api_request('POST', url, data=data, headers=self._get_headers())
-        if response['state'] == True:
+        if isinstance(response, dict) and response.get('state') == True:
             self.invalidate_offline_page1_cache()
             init.logger.info(f"离线下载任务添加成功: {response}")
             return True
-        else:
-            if response['code'] == 40140125:
-                return response
-            init.logger.warn(f"离线下载任务添加失败: {response['message']}")
-            raise Exception(response['message'])
+        if isinstance(response, dict) and response.get('code') == 40140125:
+            return response
+        if isinstance(response, dict) and response.get('code') == 10008:
+            return self._handle_duplicate_offline_submit(
+                submitted_urls or [str(download_url or "")],
+                url,
+                file_info['file_id'],
+                response,
+            )
+        err_msg = response.get('message', str(response)) if isinstance(response, dict) else str(response)
+        init.logger.warn(f"离线下载任务添加失败: {err_msg}")
+        raise Exception(err_msg)
 
     @handle_token_expiry
     def offline_download_specify_path_batch(self, download_urls, save_path):
@@ -437,65 +770,38 @@ class OpenAPI_115:
         file_info = self.get_file_info(save_path)
         if not file_info:
             self.create_dir_recursive(save_path)
+            file_info = self.get_file_info(save_path)
+        if not file_info:
+            raise Exception(f"获取保存目录信息失败: {save_path}")
 
-        # 将所有链接用换行符拼接成一个字符串
-        urls_string = "\n".join(download_urls)
+        # 按规范化键去重并拼接成一个字符串，避免批内自重复触发 10008
+        submitted_urls = self._dedupe_offline_urls(download_urls)
+        urls_string = "\n".join(submitted_urls)
 
         data = {
             "urls": urls_string,
             "wp_path_id": file_info['file_id']
         }
 
-        init.logger.info(f"批量提交 {len(download_urls)} 个离线下载任务")
+        init.logger.info(f"批量提交 {len(submitted_urls)} 个离线下载任务")
         response = self._make_api_request('POST', url, data=data, headers=self._get_headers())
 
-        if response['state'] == True:
+        if isinstance(response, dict) and response.get('state') == True:
             self.invalidate_offline_page1_cache()
             init.logger.info(f"批量离线下载任务添加成功: {response}")
             return True
-        else:
-            if response['code'] == 40140125:
-                return response
-
-            # 处理任务已存在的情况（code: 10008）
-            if response.get('code') == 10008:
-                info_hash = response.get('info_hash')
-                duplicate_url = response.get('url')
-
-                if info_hash and duplicate_url:
-                    init.logger.warn(f"检测到重复任务（code: 10008）: {duplicate_url[:80]}...")
-                    init.logger.info(f"尝试删除并重新添加任务，info_hash: {info_hash}")
-
-                    try:
-                        # 先删除已存在的任务（只移除任务记录，不删除文件）
-                        del_result = self.del_faild_offline_task(info_hash, delete_source_file=False)
-
-                        if del_result:
-                            init.logger.info(f"已删除重复任务，等待1秒后重新提交...")
-                            time.sleep(1)
-
-                            # 重新提交任务
-                            retry_response = self._make_api_request('POST', url, data=data, headers=self._get_headers())
-
-                            if retry_response.get('state') == True:
-                                init.logger.info(f"重新提交成功: {duplicate_url[:80]}...")
-                                return True
-                            else:
-                                init.logger.error(f"重新提交失败: {retry_response.get('message')}")
-                                raise Exception(f"重新提交失败: {retry_response.get('message')}")
-                        else:
-                            init.logger.error(f"删除重复任务失败")
-                            raise Exception(f"任务已存在且删除失败: {duplicate_url[:80]}...")
-
-                    except Exception as e:
-                        init.logger.error(f"处理重复任务时出错: {e}")
-                        raise
-                else:
-                    init.logger.warn(f"code 10008 但缺少 info_hash 或 url 信息: {response}")
-                    raise Exception(response.get('message', '任务已存在'))
-
-            init.logger.warn(f"批量离线下载任务添加失败: {response['message']}")
-            raise Exception(response['message'])
+        if isinstance(response, dict) and response.get('code') == 40140125:
+            return response
+        if isinstance(response, dict) and response.get('code') == 10008:
+            return self._handle_duplicate_offline_submit(
+                submitted_urls,
+                url,
+                file_info['file_id'],
+                response,
+            )
+        err_msg = response.get('message', str(response)) if isinstance(response, dict) else str(response)
+        init.logger.warn(f"批量离线下载任务添加失败: {err_msg}")
+        raise Exception(err_msg)
 
     def invalidate_offline_page1_cache(self):
         """主动失效第1页离线任务缓存（提交/删除/清理后调用）"""
@@ -523,10 +829,11 @@ class OpenAPI_115:
 
     def get_offline_tasks_for_links(self, target_urls, max_pages=None, use_cache=True):
         """
-        按需分页获取离线任务状态：从第1页开始拉取，一旦 target_urls 全部命中或达到合理页数上限立即停止，
-        避免全量翻遍几十页历史记录，同时通过3秒第1页共享缓存避免并发任务重复调用API。
+        按需分页获取离线任务状态：从第1页开始拉取，一旦 target_urls 全部命中（支持规范化 URL/BTIH/ed2k MD4 匹配）
+        或达到合理页数上限立即停止，避免全量翻遍几十页历史记录，同时通过3秒第1页共享缓存避免并发任务重复调用API。
         """
-        remaining = {u for u in (target_urls or []) if u}
+        remaining = {canonical_offline_key(u) for u in (target_urls or []) if u}
+        remaining.discard("")
         page1_data = None
 
         lock = getattr(self, "_offline_page1_cache_lock", None)
@@ -549,13 +856,21 @@ class OpenAPI_115:
         if not isinstance(page1_data, dict) or 'tasks' not in page1_data:
             return None
 
+        def _discard_matched(norm_task: dict):
+            task_key = canonical_offline_key(norm_task.get('url', ''))
+            if task_key:
+                remaining.discard(task_key)
+            task_ih = (norm_task.get('info_hash') or '').strip().lower()
+            if task_ih:
+                remaining.discard(f"btih:{task_ih}")
+
         task_list = []
         raw_page1_tasks = page1_data.get('tasks') or []
         for task in raw_page1_tasks:
             if isinstance(task, dict):
                 norm = self._normalize_offline_task(task)
                 task_list.append(norm)
-                remaining.discard(norm['url'])
+                _discard_matched(norm)
 
         page_count = int(page1_data.get('page_count') or 1)
         if not remaining or page_count <= 1:
@@ -578,7 +893,7 @@ class OpenAPI_115:
                 if isinstance(task, dict):
                     norm = self._normalize_offline_task(task)
                     task_list.append(norm)
-                    remaining.discard(norm['url'])
+                    _discard_matched(norm)
 
         return task_list
 
@@ -880,7 +1195,7 @@ class OpenAPI_115:
         if isinstance(response, dict) and response.get('code') == 0:
             init.logger.info(response['data'])
             # 需要二次认证
-            if response['data']['sign_key'] and response['data']['sign_check'] and kwargs.get('request_times') == 1:
+            if response['data'].get('sign_key') and response['data'].get('sign_check') and kwargs.get('request_times') == 1:
                 sign_check = response['data']['sign_check'].split('-')
                 sign_val = file_sha1_by_range(kwargs.get('file_path', ''), int(sign_check[0]), int(sign_check[1])).upper()
                 return self.upload_file(
@@ -892,7 +1207,7 @@ class OpenAPI_115:
                     sign_key=response['data']['sign_key'],
                     sign_val=sign_val,
                     request_times=2)
-            if response['data']['status'] != 2:
+            if response['data'].get('status') != 2:
                 # 秒传失败，需要上传到阿里服务器时
                 callback_params = response['data'].get('callback', {})
                 if callback_params:
@@ -947,7 +1262,10 @@ class OpenAPI_115:
                 init.logger.info(f"[{kwargs.get('file_name', '')}]秒传成功！")
                 return True, True
         else:
-            init.logger.warn(f"文件上传初始化失败: {response['message']}")
+            if isinstance(response, dict) and response.get('code') == 40140125:
+                return response
+            err_msg = response.get('message', str(response)) if isinstance(response, dict) else str(response)
+            init.logger.warn(f"文件上传初始化失败: {err_msg}")
             return False, False
     
     
@@ -1090,60 +1408,46 @@ class OpenAPI_115:
             tasks = self.get_offline_tasks()
             if not tasks:
                 return False, ""
-            
-            for task in tasks:
-                # 判断任务的URL是否匹配
-                if task.get('url') == url:
-                    task_name = task.get('name', '')
-                    # 检查任务状态
-                    if task.get('status') == 2 or task.get('percentDone') == 100:
-                        init.logger.info(f"[{task_name}]离线下载任务成功！")
-                        return True, task_name
-                    else:
-                        time.sleep(10)
-                        time_out += 10
-                    break
+
+            task = lookup_offline_task(build_offline_task_index(tasks), url)
+            if task is not None:
+                task_name = task.get('name', '')
+                if self._is_offline_task_completed(task):
+                    init.logger.info(f"[{task_name}]离线下载任务成功！")
+                    return True, task_name
+                time.sleep(10)
+                time_out += 10
+            else:
+                time.sleep(10)
+                time_out += 10
         init.logger.warn(f"[{task_name}]离线下载超时!")
         return False, task_name
-    
+
     def check_offline_download_success_no_waite(self, url):
         task_name = ""
-        found_task = False
         tasks = self.get_offline_tasks()
         if not tasks:
             return False, ""
-        
-        for task in tasks:
-            # 判断任务的URL是否匹配
-            if task.get('url') == url:
-                task_name = task.get('name', '')
-                found_task = True
-                # 检查任务状态
-                if task.get('status') == 2 or task.get('percentDone') == 100:
-                    init.logger.info(f"[{task_name}]离线下载任务成功！")
-                    return True, task_name
-                break  # 找到任务就退出循环，继续检查状态
-        
-        if found_task:
+
+        task = lookup_offline_task(build_offline_task_index(tasks), url)
+        if task is not None:
+            task_name = task.get('name', '')
+            if self._is_offline_task_completed(task):
+                init.logger.info(f"[{task_name}]离线下载任务成功！")
+                return True, task_name
             init.logger.warn(f"[{task_name}]离线下载任务未完成!")
             return False, task_name
-        else:
-            init.logger.warn(f"未找到匹配的离线下载任务: {url}")
-            
+
+        init.logger.warn(f"未找到匹配的离线下载任务: {url}")
         return False, task_name
-    
-    
+
     def clear_failed_task(self, url):
         tasks = self.get_offline_tasks()
         if not tasks:
             return
-        info_hash = ""
-        for task in tasks:
-            if isinstance(task, dict) and task.get('url') == url:
-                info_hash = task.get('info_hash', '')
-                # 删除离线文件
-                self.del_faild_offline_task(info_hash)
-                break
+        task = lookup_offline_task(build_offline_task_index(tasks), url)
+        if isinstance(task, dict) and task.get('info_hash'):
+            self.del_faild_offline_task(task['info_hash'])
 
         
     def get_files_from_dir(self, path, file_type=4):
@@ -1413,16 +1717,83 @@ class OpenAPI_115:
         init.logger.info(f"批量处理完成，共处理 {len(result)} 个资源")
         return result
 
-    def batch_auto_clean(self, download_path, resource_names):
+    @staticmethod
+    def _parse_clean_policy_byte_size(clean_policy) -> int:
+        """安全解析 clean_policy.less_than（支持 K/M/G，不区分大小写）"""
+        if not isinstance(clean_policy, dict):
+            return 0
+        less_than = clean_policy.get('less_than')
+        if less_than is None:
+            return 0
+        raw = str(less_than).strip().upper()
+        if not raw:
+            return 0
+        try:
+            if raw.endswith("G"):
+                return int(float(raw[:-1]) * 1024 * 1024 * 1024)
+            elif raw.endswith("M"):
+                return int(float(raw[:-1]) * 1024 * 1024)
+            elif raw.endswith("K"):
+                return int(float(raw[:-1]) * 1024)
+            elif raw.isdigit():
+                return int(raw)
+        except (TypeError, ValueError):
+            init.logger.warn(f"无效的 clean_policy.less_than 配置: {less_than}")
+        return 0
+
+    def batch_auto_clean(self, download_path, resource_names, *, is_dedicated_folder=False, exclude_filenames=None):
         """
         批量清理多个下载资源的垃圾文件
 
         Args:
             download_path: 下载目录路径
             resource_names: 资源名称列表
+            is_dedicated_folder: 是否为本次批量任务新建的独立子目录。
+                - True: 使用 115 扁平递归接口 find_all_junk_files 一次性跨所有子目录扫描并批量删除（~2-3 次 API）
+                - False: 严格限定在 resource_names 对应子目录内逐个扫描（共享目录/单链接安全模式）
+            exclude_filenames: 需要排除、不予删除的文件名集合/列表（大小写不敏感）
         """
-        # 开关关闭直接返回
-        if str(init.bot_config['clean_policy']['switch']).lower() == "off":
+        clean_policy = (init.bot_config or {}).get('clean_policy') or {}
+        switch_val = clean_policy.get('switch', 'off')
+        if switch_val is False or str(switch_val).strip().lower() in ("off", "false", "0", ""):
+            return
+
+        byte_size = self._parse_clean_policy_byte_size(clean_policy)
+        if byte_size <= 0:
+            return
+
+        excluded_lower = {str(name).strip().lower() for name in (exclude_filenames or []) if name}
+
+        # 快速路径：独立批次子目录 -> 扁平递归列出全部小于阈值的文件（~3 次 API 完成 100+ 子目录清理）
+        if is_dedicated_folder:
+            parent_info = self.get_file_info(download_path)
+            if not parent_info:
+                init.logger.warn(f"获取下载目录信息失败: {download_path}")
+                return
+
+            junk_files = self.find_all_junk_files(parent_info['file_id'], 0, byte_size, limit=1150)
+            if not junk_files:
+                init.logger.info(f"[{download_path}]下没有找到需要清理的垃圾文件")
+                return
+
+            all_fid_to_delete = []
+            for file in junk_files:
+                fn = str(file.get('fn') or '')
+                if excluded_lower and fn.lower() in excluded_lower:
+                    init.logger.debug(f"[{fn}]在排除列表中，跳过清理")
+                    continue
+                fid = file.get('fid')
+                if fid:
+                    all_fid_to_delete.append(fid)
+                    init.logger.info(f"[{fn}]已添加到清理列表")
+
+            if all_fid_to_delete:
+                self._batch_delete_files(all_fid_to_delete, batch_size=100)
+                init.logger.info(f"批量快速清理完成，共删除 {len(all_fid_to_delete)} 个垃圾文件")
+            return
+
+        # 安全限定路径（共享目录或单链接）：严格仅清理 resource_names 对应的子目录
+        if not resource_names:
             return
 
         # 获取下载目录信息（只调用一次）
@@ -1444,22 +1815,13 @@ class OpenAPI_115:
         if not all_items:
             return
 
-        # 计算字节大小
-        byte_size = 0
-        less_than = init.bot_config['clean_policy']['less_than']
-        if less_than is not None:
-            if str(less_than).upper().endswith("M"):
-                byte_size = int(less_than[:-1]) * 1024 * 1024
-            elif str(less_than).upper().endswith("K"):
-                byte_size = int(less_than[:-1]) * 1024
-            elif str(less_than).upper().endswith("G"):
-                byte_size = int(less_than[:-1]) * 1024 * 1024 * 1024
-
         # 收集所有需要清理的目录ID
+        resource_name_set = set(resource_names)
         dir_ids = []
         for item in all_items:
-            if item.get('fn') in resource_names and item.get('fc') == '0':  # 是目录
-                dir_ids.append(item.get('fid'))
+            if item.get('fn') in resource_name_set and item.get('fc') == '0':  # 是目录
+                if item.get('fid'):
+                    dir_ids.append(item.get('fid'))
 
         if not dir_ids:
             return
@@ -1480,23 +1842,27 @@ class OpenAPI_115:
 
             for file in file_list:
                 # 只删除小于指定大小的文件
-                if file['fc'] == '1':  # 是文件
-                    if file['fs'] < byte_size:
+                if file.get('fc') == '1':  # 是文件
+                    fn = str(file.get('fn') or '')
+                    if excluded_lower and fn.lower() in excluded_lower:
+                        init.logger.debug(f"[{fn}]在排除列表中，跳过清理")
+                        continue
+                    if (file.get('fs') or 0) < byte_size and file.get('fid'):
                         all_fid_to_delete.append(file['fid'])
-                        init.logger.info(f"[{file['fn']}]已添加到清理列表")
+                        init.logger.info(f"[{fn}]已添加到清理列表")
                 # 跳过目录，不要删除子目录（可能包含有效内容）
                 # 如果需要清理空目录，应该在确认目录为空后再删除
 
         # 分批删除所有垃圾文件
         if all_fid_to_delete:
-            self._batch_delete_files(all_fid_to_delete)
+            self._batch_delete_files(all_fid_to_delete, batch_size=100)
             init.logger.info(f"批量清理完成，共删除 {len(all_fid_to_delete)} 个文件/目录")
 
     def find_all_junk_files(self, cid, offset, byte_size, file_list=None, limit=1150):
         """
         递归查找所有小于指定大小的垃圾文件
 
-        使用分页查询和文件大小排序优化，当最后一个文件仍小于目标大小时继续递归查找，
+        使用分页查询和文件大小排序优化，当本页已满且最后一个文件仍小于目标大小时继续递归查找，
         否则停止查询并过滤返回小于目标大小的文件。
 
         Args:
@@ -1511,7 +1877,10 @@ class OpenAPI_115:
         """
         if file_list is None:
             file_list = []
-            
+
+        if byte_size <= 0:
+            return []
+
         params = {
             "cid": cid,
             "limit": limit,
@@ -1521,31 +1890,29 @@ class OpenAPI_115:
             "o": "file_size",
             "offset": offset
         }
-        
+
         # 获取当前页的文件列表
         current_files = self.get_file_list(params)
-        
+
         # 如果API调用失败或没有获取到文件，说明已经到末尾或出现错误
         if not current_files:
             # 过滤掉大于等于目标大小的文件，只返回垃圾文件
-            junk_files = [f for f in file_list if f['fs'] < byte_size]
-            return junk_files
-            
+            return [f for f in file_list if f.get('fc') != '0' and (f.get('fs') or 0) < byte_size]
+
         # 将当前页的文件添加到结果列表
         file_list.extend(current_files)
-        
+
         # 检查最后一个文件的大小
-        last_file_size = current_files[-1]['fs']
-        
-        # 如果最后一个文件大小仍然小于目标大小，继续递归查找
-        if last_file_size < byte_size:
+        last_file_size = current_files[-1].get('fs') or 0
+
+        # 仅当本页返回数达到 limit（可能还有下一页）且最后一个文件仍小于目标大小时才继续翻页
+        if len(current_files) >= limit and last_file_size < byte_size:
             offset += limit
-            time.sleep(5)  # 避免请求过快
-            return self.find_all_junk_files(cid, offset, byte_size, file_list)
+            time.sleep(1)  # _make_api_request 已限速 1 req/s，温和间隔避免突发
+            return self.find_all_junk_files(cid, offset, byte_size, file_list, limit=limit)
         else:
             # 已经找到所有小于目标大小的文件，过滤掉大于等于目标大小的文件
-            junk_files = [f for f in file_list if f['fs'] < byte_size]
-            return junk_files
+            return [f for f in file_list if f.get('fc') != '0' and (f.get('fs') or 0) < byte_size]
 
 
     def create_dir_recursive(self, path):

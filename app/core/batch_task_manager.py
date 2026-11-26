@@ -396,6 +396,10 @@ def generate_magnet_txt_file(group_id: str, folder_path: str, folder_name: str) 
     Returns:
         是否成功生成
     """
+    import os
+    from app.core.open_115 import file_sha1
+
+    temp_txt_path = None
     try:
         # 从数据库获取所有任务的磁力链接
         with SqlLiteLib() as sqlite:
@@ -430,21 +434,33 @@ def generate_magnet_txt_file(group_id: str, folder_path: str, folder_name: str) 
         txt_content = "\n".join(txt_content_lines)
 
         # 使用115 API上传TXT文件
-        txt_filename = f"{folder_name}.txt"
+        safe_folder_name = (folder_name or f"batch_{group_id}").replace("/", "-").replace("\\", "-").strip()
+        if not safe_folder_name:
+            safe_folder_name = f"batch_{group_id}"
+        txt_filename = f"{safe_folder_name}.txt"
 
-        # 先写入本地临时文件
-        import os
-        temp_txt_path = os.path.join(init.TEMP, txt_filename)
+        # 确保临时目录存在后再写入本地临时文件
+        temp_dir = getattr(init, "TEMP", None) or "/tmp"
+        os.makedirs(temp_dir, exist_ok=True)
+        temp_txt_path = os.path.join(temp_dir, f"{group_id}_{txt_filename}")
         with open(temp_txt_path, 'w', encoding='utf-8') as f:
             f.write(txt_content)
 
-        # 上传到115云盘
-        upload_result = init.openapi_115.upload_file(temp_txt_path, folder_path)
+        file_size = os.path.getsize(temp_txt_path)
+        sha1_value = file_sha1(temp_txt_path)
 
-        # 删除临时文件
-        os.remove(temp_txt_path)
+        # 上传到115云盘（OpenAPI_115.upload_file 仅接受关键字参数并返回 (is_upload, bingo)）
+        upload_result = init.openapi_115.upload_file(
+            target=folder_path,
+            file_name=txt_filename,
+            file_size=file_size,
+            fileid=sha1_value,
+            file_path=temp_txt_path,
+            request_times=1,
+        )
+        is_uploaded = bool(upload_result[0]) if isinstance(upload_result, tuple) else bool(upload_result)
 
-        if upload_result:
+        if is_uploaded:
             init.logger.info(f"📄 已生成磁力链接TXT文件: {folder_path}/{txt_filename}")
             return True
         else:
@@ -454,6 +470,12 @@ def generate_magnet_txt_file(group_id: str, folder_path: str, folder_name: str) 
     except Exception as e:
         init.logger.error(f"生成磁力链接TXT文件失败: {e}")
         return False
+    finally:
+        if temp_txt_path and os.path.exists(temp_txt_path):
+            try:
+                os.remove(temp_txt_path)
+            except Exception as rm_err:
+                init.logger.warn(f"清理临时TXT文件失败: {rm_err}")
 
 
 def get_batch_task_group_info(group_id: str) -> Optional[Dict]:

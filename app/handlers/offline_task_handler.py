@@ -5,6 +5,7 @@ from app.utils.sqlitelib import *
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 from app.utils.message_queue import add_task_to_queue
+from app.core.open_115 import build_offline_task_index, lookup_offline_task
 import time
 from warnings import filterwarnings
 from telegram.warnings import PTBUserWarning
@@ -64,11 +65,11 @@ def retry_single_offline_task_now(task_id: int):
 
     time.sleep(8)
     cloud_list = init.openapi_115.get_offline_tasks_for_links([link], use_cache=False) or []
-    matched = next((t for t in cloud_list if isinstance(t, dict) and t.get("url") == link), None)
+    matched = lookup_offline_task(build_offline_task_index(cloud_list), link)
     if matched and matched.get("status") in (0, 1) and (matched.get("percentDone") or 0) < 100:
         time.sleep(20)
         cloud_list = init.openapi_115.get_offline_tasks_for_links([link], use_cache=False) or []
-        matched = next((t for t in cloud_list if isinstance(t, dict) and t.get("url") == link), None)
+        matched = lookup_offline_task(build_offline_task_index(cloud_list), link)
 
     if matched and (matched.get("status") == 2 or matched.get("percentDone") == 100):
         resource_name = matched.get("name") or ""
@@ -161,7 +162,8 @@ def try_to_offline2115_again():
     time.sleep(300)  # 等待5秒，确保任务状态更新
     
     offline_task_status = init.openapi_115.get_offline_tasks()
-    
+    cloud_index = build_offline_task_index(offline_task_status)
+
     for task in failed_tasks:
         task_id = task['id']
         link = task['magnet']
@@ -169,8 +171,9 @@ def try_to_offline2115_again():
         save_path = task['save_path']
         retry_count = task['retry_count']
         task_created_at = task.get('created_at')
-        for cloud_task in offline_task_status:
-            if cloud_task['url'] == link:
+        cloud_task = lookup_offline_task(cloud_index, link)
+        if cloud_task is not None:
+            for cloud_task in [cloud_task]:
                 if cloud_task['status'] == 2 and cloud_task['percentDone'] == 100:
                     resource_name = cloud_task['name']
                     init.logger.info(f"重试任务 {title} 下载完成！")

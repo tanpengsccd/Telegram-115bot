@@ -17,6 +17,8 @@ for p in (ROOT_DIR, APP_DIR):
         sys.path.insert(0, p)
 
 import init
+os.makedirs(os.path.join(ROOT_DIR, "tmp"), exist_ok=True)
+init.DB_FILE = os.path.join(ROOT_DIR, "tmp", "_test_panel_and_reactions.db")
 from telegram import Update, ReactionTypeEmoji, ReplyParameters
 from telegram.constants import ReactionEmoji
 from telegram.ext import Application, TypeHandler
@@ -40,6 +42,8 @@ from app.handlers.menu_handler import (
     register_fallback_handlers,
     handle_panel_callback,
     handle_unrecognized_message,
+    DEFAULT_PANEL_REFRESH_DEBOUNCE_SEC,
+    get_panel_refresh_debounce_sec,
 )
 from app.handlers.download_handler import (
     register_download_handlers,
@@ -94,17 +98,20 @@ def test_panel_pagination_and_help_without_subscription():
         "panel:log", "panel:page:2",
     ]
 
-    p2_text, p2_markup = build_home_panel(page=2, minimal_mode=True, retry_cap_hours=48)
+    p2_text, p2_markup = build_home_panel(page=2, minimal_mode=True, retry_cap_hours=48, auto_retry_enabled=False)
     p2_cbs = [btn.callback_data for row in p2_markup.inline_keyboard for btn in row]
     assert "第 2/2 页" in p2_text
     assert "已开启" in p2_text
+    assert "自动重试机制：<b>已关闭</b>" in p2_text
     assert "48小时（2天）" in p2_text
     assert p2_cbs == [
         "panel:reload", "panel:reset_path",
         "panel:auth", "panel:toggle_minimal",
-        "panel:retry_cap", "panel:page:1",
+        "panel:toggle_auto_retry", "panel:retry_cap",
+        "panel:page:1",
     ]
     assert any("重试上限：2天" in btn.text for row in p2_markup.inline_keyboard for btn in row)
+    assert any("自动重试：关闭" in btn.text for row in p2_markup.inline_keyboard for btn in row)
 
     help_text = build_help_text()
     assert "/sm" not in help_text
@@ -728,7 +735,11 @@ def test_clickable_persisted_task_queue_and_retry_list():
         assert "筛选：<b>待重试</b>" in r_text
         assert f"panel:bd:{gid}:1:failed:retry" in r_cbs
 
-        # 3. Detail view: attempt number + next auto retry (relative + absolute time)
+        # 3. Detail view: shows auto-retry disabled by default; when enabled, shows attempt number + next auto retry
+        from app.utils.bot_settings import set_auto_retry_enabled
+        bd_text_off, _ = build_batch_group_detail_view(gid, page=1, mode="all", back="retry")
+        assert "自动重试：<b>已关闭</b>" in bd_text_off
+        set_auto_retry_enabled(True)
         bd_text, bd_markup = build_batch_group_detail_view(gid, page=1, mode="all", back="retry")
         bd_cbs = [btn.callback_data for row in bd_markup.inline_keyboard for btn in row]
         assert "第 3 次尝试任务" in bd_text
@@ -738,10 +749,11 @@ def test_clickable_persisted_task_queue_and_retry_list():
         assert f"panel:bg_del:{gid}:retry" in bd_cbs
         assert "panel:tq:retry" in bd_cbs
 
-        # 4. Retry-cap settings view shows doubling chain and options up to 16 days
+        # 4. Retry-cap settings view shows doubling chain, inline auto-retry toggle, and options up to 16 days
         cap_text, cap_markup = build_retry_cap_view()
         cap_cbs = [btn.callback_data for row in cap_markup.inline_keyboard for btn in row]
         assert "10分钟 → 20分钟 → 40分钟" in cap_text
+        assert "panel:toggle_auto_retry_inline" in cap_cbs
         assert "panel:retry_cap_set:384" in cap_cbs
 
         # 5. Callbacks: filter switch, set cap, delete group
@@ -776,6 +788,90 @@ def test_clickable_persisted_task_queue_and_retry_list():
             os.remove(test_db)
 
 
+def test_auto_retry_toggle_and_panel_debounce_default():
+    """Auto-retry switch defaults to OFF, sends detailed usage guide when enabled, and panel debounce defaults to 3s."""
+    init.logger = _DummyLogger()
+    init.bot_config = {"allowed_user": [42]}
+    reset_panel_states()
+
+    assert DEFAULT_PANEL_REFRESH_DEBOUNCE_SEC == 3.0
+    assert get_panel_refresh_debounce_sec() == 3.0
+    init.bot_config["panel_refresh_debounce_sec"] = 5
+    assert get_panel_refresh_debounce_sec() == 5.0
+    init.bot_config.pop("panel_refresh_debounce_sec", None)
+    assert get_panel_refresh_debounce_sec() == 3.0
+
+    os.makedirs(os.path.join(ROOT_DIR, "tmp"), exist_ok=True)
+    test_db = os.path.join(ROOT_DIR, "tmp", "test_auto_retry_toggle.db")
+    if os.path.exists(test_db):
+        os.remove(test_db)
+
+    old_db = init.DB_FILE
+    try:
+        init.DB_FILE = test_db
+        from app.utils.bot_settings import is_auto_retry_enabled
+        assert is_auto_retry_enabled() is False
+
+        sent_messages = []
+        msg_counter = [500]
+
+        async def _fake_send(**kwargs):
+            msg_counter[0] += 1
+            sent_messages.append(kwargs)
+            return MagicMock(message_id=msg_counter[0])
+
+        bot = MagicMock()
+        bot.send_message = AsyncMock(side_effect=_fake_send)
+        bot.delete_message = AsyncMock(return_value=True)
+        bot.set_message_reaction = AsyncMock(return_value=True)
+
+        state = get_chat_panel_state(100)
+        state["panel_page"] = 2
+        state["panel_message_id"] = 499
+
+        def _cb(action):
+            q = MagicMock()
+            q.data = action
+            q.answer = AsyncMock()
+            q.edit_message_text = AsyncMock()
+            q.message = MagicMock(chat_id=100, message_id=state["panel_message_id"], text="panel")
+            upd = MagicMock(callback_query=q, effective_user=MagicMock(id=42), effective_chat=MagicMock(id=100))
+            ctx = MagicMock(bot=bot)
+            asyncio.run(handle_panel_callback(upd, ctx))
+            return q
+
+        # 1. Turn ON from Page 2 -> sends detailed usage guide + refreshes Page 2 button to 开启
+        _cb("panel:toggle_auto_retry")
+        assert is_auto_retry_enabled() is True
+        guide_msg = sent_messages[0]["text"]
+        assert "已开启自动重试机制" in guide_msg
+        assert "自动重试使用说明" in guide_msg
+        assert "10 分钟" in guide_msg
+        assert "2 倍指数退避" in guide_msg
+        assert "引用你最初添加任务的消息" in guide_msg
+        panel_markup = sent_messages[1]["reply_markup"]
+        panel_labels = [btn.text for row in panel_markup.inline_keyboard for btn in row]
+        assert "🔁 自动重试：开启" in panel_labels
+
+        # 2. Turn OFF from Page 2 -> sends concise disable notice + refreshes button to 关闭
+        sent_messages.clear()
+        _cb("panel:toggle_auto_retry")
+        assert is_auto_retry_enabled() is False
+        assert "已关闭自动重试机制" in sent_messages[0]["text"]
+        panel_labels_off = [btn.text for row in sent_messages[1]["reply_markup"].inline_keyboard for btn in row]
+        assert "🔁 自动重试：关闭" in panel_labels_off
+
+        # 3. Turn ON inline from retry-cap settings view -> edits in-place with usage guide
+        q_inline = _cb("panel:toggle_auto_retry_inline")
+        assert is_auto_retry_enabled() is True
+        inline_text = q_inline.edit_message_text.await_args.kwargs["text"]
+        assert "自动重试使用说明" in inline_text
+    finally:
+        init.DB_FILE = old_db
+        if os.path.exists(test_db):
+            os.remove(test_db)
+
+
 if __name__ == "__main__":
     test_reaction_emojis_and_clear()
     test_panel_pagination_and_help_without_subscription()
@@ -791,4 +887,5 @@ if __name__ == "__main__":
     test_message_queue_reply_to_origin_message()
     test_logger_accepts_exc_info_and_document_task_detail_callback()
     test_clickable_persisted_task_queue_and_retry_list()
+    test_auto_retry_toggle_and_panel_debounce_default()
     print("All panel, task-queue, 115-cloud-manager, reply-quoting, and fallback tests passed!")

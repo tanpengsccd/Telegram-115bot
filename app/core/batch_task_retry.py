@@ -24,7 +24,9 @@ from app.utils.bot_settings import (
     get_retry_max_wait_seconds,
     format_retry_cap_label,
     format_wait_duration,
+    is_auto_retry_enabled,
 )
+from app.core.open_115 import build_offline_task_index, lookup_offline_task
 from app.core.batch_task_manager import (
     get_pending_retry_tasks,
     schedule_retry_attempt,
@@ -63,7 +65,41 @@ def _cloud_map(magnets: List[str]) -> Dict[str, Dict]:
     except Exception as e:
         init.logger.warn(f"⚠️ 获取离线任务状态失败: {e}")
         return {}
-    return {t.get('url'): t for t in cloud_list if isinstance(t, dict) and t.get('url')}
+    index = build_offline_task_index(cloud_list)
+    result: Dict[str, Dict] = {}
+    for m in magnets:
+        if not m:
+            continue
+        matched = lookup_offline_task(index, m)
+        if matched is not None:
+            result[m] = matched
+    return result
+
+
+def _deep_cloud_map(magnets: List[str]) -> Dict[str, Dict]:
+    """深度分页查找云端离线任务（用于定位已沉到底部页的旧任务或 10008 重复任务）。"""
+    clean_magnets = [m for m in (magnets or []) if m]
+    if not clean_magnets or init.openapi_115 is None:
+        return {}
+    try:
+        finder = getattr(init.openapi_115, 'find_offline_tasks_by_urls', None)
+        if callable(finder):
+            found = finder(clean_magnets)
+            if isinstance(found, dict):
+                return found
+        cloud_list = init.openapi_115.get_offline_tasks_for_links(
+            clean_magnets, max_pages=999, use_cache=False
+        ) or []
+    except Exception as e:
+        init.logger.warn(f"⚠️ 深度获取离线任务状态失败: {e}")
+        return {}
+    index = build_offline_task_index(cloud_list)
+    result: Dict[str, Dict] = {}
+    for m in clean_magnets:
+        matched = lookup_offline_task(index, m)
+        if matched is not None:
+            result[m] = matched
+    return result
 
 
 def _safe_del_cloud(cloud_task, delete_source: bool) -> None:
@@ -86,13 +122,22 @@ def retry_submit_to_115(tasks: List[Dict], save_path: str) -> bool:
                 init.logger.warn(f"⚠️ 离线配额不足: 剩余 {left_offline_quota}，需要 {len(tasks)}")
                 return False
 
-        offline_urls = "\n".join([task['magnet'] for task in tasks])
-        offline_success = init.openapi_115.offline_download_specify_path(offline_urls, save_path)
-        if offline_success:
-            init.logger.info(f"✅ 成功重新提交 {len(tasks)} 个重试任务到115")
-            return True
-        init.logger.error("❌ 提交重试任务到115失败")
-        return False
+        # 115 单次接口最多接受 115 条链接
+        chunk_size = 115
+        for start in range(0, len(tasks), chunk_size):
+            chunk = tasks[start:start + chunk_size]
+            offline_urls = "\n".join([task['magnet'] for task in chunk if task.get('magnet')])
+            if not offline_urls:
+                continue
+            offline_success = init.openapi_115.offline_download_specify_path(offline_urls, save_path)
+            if not offline_success:
+                init.logger.error("❌ 提交重试任务到115失败")
+                return False
+            if start + chunk_size < len(tasks):
+                time.sleep(1)
+
+        init.logger.info(f"✅ 成功重新提交 {len(tasks)} 个重试任务到115")
+        return True
     except Exception as e:
         init.logger.error(f"❌ 提交重试任务异常: {e}")
         return False
@@ -101,9 +146,10 @@ def retry_submit_to_115(tasks: List[Dict], save_path: str) -> bool:
 def _process_retry_group(group_id: str, tasks: List[Dict], *, manual: bool = False) -> Dict:
     """
     处理一个任务组中到期的重试项：
-    1. 先检查上一轮提交是否已完成 → 成功则标记完成；
+    1. 先检查上一轮提交是否已完成（若上一轮任务未在前几页命中则深度翻页定位）→ 成功则标记完成；
     2. 未完成且本轮等待已达上限 → 标记失败；
-    3. 其余重新提交磁力，并把等待时间翻倍（手动立即重试不翻倍）。
+    3. 其余重新提交磁力，并把等待时间翻倍（手动立即重试不翻倍）；
+    4. 若提交仍失败（如旧页残留引发 10008），深度查找已完成的直接补全、清理陈旧失败重复项并重试一次。
     """
     group_info = get_batch_task_group_info(group_id)
     if not group_info:
@@ -112,7 +158,16 @@ def _process_retry_group(group_id: str, tasks: List[Dict], *, manual: bool = Fal
 
     actual_path = get_group_actual_path(group_info)
     cap = get_retry_max_wait_seconds()
-    cloud = _cloud_map([t['magnet'] for t in tasks if t.get('magnet')])
+    all_magnets = [t['magnet'] for t in tasks if t.get('magnet')]
+    cloud = _cloud_map(all_magnets)
+
+    # 上一轮已提交过的任务可能被新任务挤到第 10+ 页，快速查询未命中时补做深度查找
+    missing_prev_magnets = [
+        t['magnet'] for t in tasks
+        if t.get('magnet') and t.get('last_retry_at') and t['magnet'] not in cloud
+    ]
+    if missing_prev_magnets:
+        cloud.update(_deep_cloud_map(missing_prev_magnets))
 
     newly_succeeded = 0
     newly_dead = 0
@@ -140,7 +195,33 @@ def _process_retry_group(group_id: str, tasks: List[Dict], *, manual: bool = Fal
 
     submitted = 0
     if to_resubmit:
-        if retry_submit_to_115(to_resubmit, actual_path):
+        submit_ok = retry_submit_to_115(to_resubmit, actual_path)
+        if not submit_ok:
+            # 兜底深度查找：处理位于深页的已完成任务或残留重复任务（防止 10008 死循环）
+            deep_found = _deep_cloud_map([t['magnet'] for t in to_resubmit if t.get('magnet')])
+            if deep_found:
+                remaining_to_resubmit: List[Dict] = []
+                cleaned_stale = 0
+                recovered_done = 0
+                for task in to_resubmit:
+                    magnet = task.get('magnet')
+                    ct = deep_found.get(magnet)
+                    if _is_cloud_done(ct):
+                        update_task_item_status(magnet, group_id, 'success', ct.get('name') or task.get('resource_name') or '')
+                        _safe_del_cloud(ct, False)
+                        newly_succeeded += 1
+                        recovered_done += 1
+                        continue
+                    if ct:
+                        _safe_del_cloud(ct, True)
+                        cleaned_stale += 1
+                    remaining_to_resubmit.append(task)
+                to_resubmit = remaining_to_resubmit
+                if to_resubmit and (cleaned_stale > 0 or recovered_done > 0):
+                    time.sleep(1)
+                    submit_ok = retry_submit_to_115(to_resubmit, actual_path)
+
+        if to_resubmit and submit_ok:
             now = int(time.time())
             for task in to_resubmit:
                 current_wait = int(task.get('current_wait') or BASE_RETRY_WAIT_SECONDS)
@@ -155,16 +236,20 @@ def _process_retry_group(group_id: str, tasks: List[Dict], *, manual: bool = Fal
                 )
             submitted = len(to_resubmit)
 
-            # 快速探测：秒传/热种资源可立即判定成功
+            # 快速探测：秒传/热种资源或深页复用已完成任务可立即判定成功
             time.sleep(QUICK_PROBE_SECONDS)
-            probe = _cloud_map([t['magnet'] for t in to_resubmit])
+            probe_magnets = [t['magnet'] for t in to_resubmit if t.get('magnet')]
+            probe = _cloud_map(probe_magnets)
+            missing_probe = [m for m in probe_magnets if m not in probe]
+            if missing_probe:
+                probe.update(_deep_cloud_map(missing_probe))
             for task in to_resubmit:
                 cloud_task = probe.get(task['magnet'])
                 if _is_cloud_done(cloud_task):
                     update_task_item_status(task['magnet'], group_id, 'success', cloud_task.get('name') or '')
                     _safe_del_cloud(cloud_task, False)
                     newly_succeeded += 1
-        else:
+        elif to_resubmit:
             for task in to_resubmit:
                 defer_retry_attempt(task['id'], SUBMIT_FAIL_DEFER_SECONDS)
             init.logger.warn(f"⚠️ 任务组 {group_id} 提交115失败，{SUBMIT_FAIL_DEFER_SECONDS // 60} 分钟后再试")
@@ -189,7 +274,11 @@ def _process_retry_group(group_id: str, tasks: List[Dict], *, manual: bool = Fal
 
 
 def execute_batch_retry():
-    """调度器定期调用：只处理到期（next_retry_at <= now）的重试项，未到期不会调用 115 接口。"""
+    """调度器定期调用：仅在自动重试开关开启时处理到期（next_retry_at <= now）的重试项。"""
+    if not is_auto_retry_enabled():
+        init.logger.debug("⏸ 自动重试开关已关闭，跳过本轮后台自动重试")
+        return
+
     retry_tasks = get_pending_retry_tasks()
     if not retry_tasks:
         init.logger.debug("✨ 当前没有到期的重试任务")
