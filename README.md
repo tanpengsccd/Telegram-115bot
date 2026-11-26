@@ -1,215 +1,355 @@
+# Telegram-115Bot（增强版 · Telegram + Web 控制台 + REST API）
 
+一个基于 Python 的 115 网盘离线下载与管理工具，支持 **Telegram 机器人交互控制**、**手机/桌面自适应 Web 控制台（PWA）** 以及 **外部 REST API 调用**（FastAPI + React/Tailwind）。
 
-# 修改点：
-- [x] 支持多用户配置（`allowed_user` 支持单个用户 ID 或用户 ID 列表）
-- [x] 支持多个磁力 / ed2k / 迅雷链接批量添加离线任务，支持短时间多条消息自动合并（`msgs_merge_interval`）
-- [x] 支持上传 `.txt` 文件统一提取链接并批量离线下载
-- [x] 批量下载时自动识别文本【首行 + 尾行文字】作为文件夹名，下载完成后支持 `移动到[文件夹名]` 批量整理
-- [x] 新增批量任务 SQLite 持久化与失败任务定时重试，重复离线任务（`code 10008`）自动删除记录并重提
-- [x] 115 API 增加线程安全速率限制（1 req/s）与分批删除（每批 100 条 + 失败重试）
-- [x] 优化本地启动与 115 授权容错：自动补齐 `app` 子模块路径；115 Token 过期/解除授权时降级运行不崩溃，支持直接发 `/auth` 扫码重授权（并修复扫码等待阶段 `status` 判空异常）
-- [x] 移植上游 Telegram 连接稳定性优化：`HTTPXRequest` 显式代理与 keep-alive 回收防 502、`concurrent_updates(4)`、`allowed_updates=Update.ALL_TYPES` 防按钮无响应、全局错误与原始回调日志
+> 本项目 Fork 自上游仓库 [`qiqiandfei/Telegram-115bot`](https://github.com/qiqiandfei/Telegram-115bot)，共同祖先版本（`v3.2.13`）的原始说明文档见：[上游分叉基线 README (`a5a1808`)](https://github.com/qiqiandfei/Telegram-115bot/blob/a5a1808e5856023928d26bddb0ba9c5414208621/README.md)。
 
-## 本地调试
+---
 
-### 1. 准备 Python 虚拟环境（Python 3.12+ / 3.13）
+## 核心特性与改动总结
 
-方式一（使用 `uv`，推荐）：
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-uv venv
-uv pip install -r requirements.txt
+### 1. Telegram 控制面板与交互体验
+- **常驻底部唯一控制面板**：2 页布局，默认开启「对话极简模式」（除导出日志外仅保留最新一条结果消息）；短时间连发多个文件时支持 **3 秒防抖置底**（`panel_refresh_debounce_sec`），面板只重发一次不刷屏。
+- **表情状态反馈**：收到授权用户消息/文件后立即标记 `👀`，处理完成变为 `👌`，异常或无法识别标记 `😢`。
+- **统一任务队列（已合并重试列表）**：支持 `全部 / 进行中 / 待重试 / 已完成 / 已失败` 5 状态筛选，记录全部按钮化展示，点击查看逐条磁力明细、第 N 次尝试与下次重试时间，支持手动立即重试、单删与批量清空。
+- **115 官方云端任务管理**：支持 `/cloud_tasks` 或面板分页浏览、单条删除（仅删记录 / 含源文件删除）与一键清空已完成 / 失败 / 全部记录。
+- **精简聚焦**：移除电影订阅与爬虫相关命令及定时任务，专注离线下载、队列追踪与网盘管理。
+
+### 2. 多格式文件解析与批量任务确认流
+- **多格式无 500KB 限制**：纯 Python 解析 `.txt`、`.csv`、`.html`、`.htm`、`.xlsx`、`.xlsm`、`.xls`、`.torrent`，自动识别 `magnet:` / `ed2k://` / `thunder://` / `.torrent` 链接并去重。
+- **多链接预览确认 + 一键默认目录**：文件匹配超过 1 条链接时先回传 `原文件名+数量V+时间.txt` 预览清单；直接提供 **「✅ 确认下载至默认文件夹」** 与 **「📂 确认并下载至其他文件夹」**（默认目录持久化至 SQLite）。
+- **30 秒超时自动确认 + 取消倒计时按钮**：若 `30` 秒（`file_confirm_auto_timeout_sec` 可配，设为 `0` 关闭）内未操作，自动开始下载到默认目录；点击 **「⏸ 取消30秒自动倒计时」** 仅取消倒计时，保留任务供后续手动决定。
+- **多文件并发确认隔离**：每个文件绑定独立 `confirm_id`，连续发送多个文件按任意顺序点选目录互不覆盖。
+
+### 3. 115 批量 API 优化、自适应轮询与自动重试
+- **ETA 自适应轮询 + 10 分钟无进度早停**：按剩余预计时间动态拉长轮询间隔，配合按需分页与第 1 页 3 秒共享缓存大幅降低 API 消耗。
+- **批量后处理提速**：`create_strm: false` 时跳过逐项目录查询；批量任务先立即发送引用原消息的完成汇总，再后台执行递归扁平垃圾清理、100 条分批删除、`clear_cloud_task(4)` 一步清云端记录与磁力备份 TXT 上传。
+- **自动重试开关（默认关闭）+ 2 倍指数退避**：可在 TG 面板第 2 页或 Web 设置页实时开关（开启时自动展示完整使用说明）；开启后每轮等待时间翻倍直到达到上限（24h / 2天 / 4天 / 8天 / 16天），成功或最终失败均引用原消息通知。
+- **稳定性增强**：修复 115 `code: 10008` 重复提交死循环、`ed2k`/Base32 磁力匹配差异、Token 过期降级不崩溃以及 Telegram `HTTPXRequest` 长连接防 502 问题。
+
+### 4. Web 管理端（手机/桌面 PWA）与外部 REST API
+- **双运行模式**：默认随 `app/115bot.py` 同进程启动（共享内存进度、115 限流器、Token 与 SQLite）；也可运行 `app/web_server.py` 纯 Web + API 独立启动（无需 TG Bot Token）。
+- **鉴权与文档**：Web 端使用 PBKDF2-SHA256 密码哈希 + `HttpOnly` 签名 Cookie；外部 API 支持 `X-API-Key` 或 `Authorization: Bearer <key>`，自动生成 Swagger 交互文档（`/docs`）。
+- **多端响应式 + SSE 实时流**：桌面端左侧固定侧边栏，手机端底部 5-Tab 固定导航（适配 Safe Area + PWA 添加到主屏幕）；任务队列与运行日志均支持 SSE 实时推送；Web/API 下载完成可选同步推送汇总到 Telegram。
+
+---
+
+## 项目目录结构
+
+```text
+.
+├── app/
+│   ├── 115bot.py                 # 主入口（TG Bot + 内嵌 Web/API）
+│   ├── web_server.py             # 纯 Web + REST API 独立启动入口
+│   ├── init.py                   # 全局初始化、配置加载与数据库初始化
+│   ├── config.yaml.example       # 配置文件模板
+│   ├── core/                     # 115 OpenAPI、批量任务、自动重试、调度器
+│   ├── handlers/                 # Telegram 命令与回调处理器
+│   ├── utils/                    # 多格式链接解析、任务追踪、自适应轮询、设置与队列
+│   └── web/                      # FastAPI 后端、鉴权、115 扫码、SSE 与静态产物（static/）
+├── web-frontend/                 # React + Vite + Tailwind CSS + PWA 前端源码
+├── config/
+│   └── config.yaml.example       # 配置文件模板（复制为 config/config.yaml 使用）
+├── create_tg_session_file.py     # 大视频（>20MB）转存所需的 Telethon Session 生成脚本
+├── Dockerfile                    # 多阶段构建（Node 打包前端 + Python 后端）
+├── Dockerfile.base               # Python 3.13 + Playwright 基础镜像
+├── docker-compose.yaml           # Docker Compose 编排文件（映射 8115 端口）
+├── build.sh                      # 本地镜像构建脚本
+├── requirements.txt              # Python 依赖清单
+└── test_*.py                     # 自动化单元测试套件（9 组）
 ```
 
-方式二（使用标准库 `venv` + `pip`）：
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-```
+---
 
-> 若系统缺少 `python3-venv` / `ensurepip`（如精简版 Debian 13），可用 `--without-pip` 建环境后通过 `get-pip.py` 安装 `pip`：
-> ```bash
-> rm -rf .venv && python3 -m venv --without-pip .venv
-> curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
-> .venv/bin/python /tmp/get-pip.py && rm -f /tmp/get-pip.py
-> .venv/bin/pip install -r requirements.txt
-> ```
-> 若宿主机升级过 Python 主版本（如 3.9 → 3.13）导致旧 `.venv` 报 `ModuleNotFoundError`，删除 `.venv` 按上述命令重建即可。
+## 完整使用流程
 
-### 2. 准备配置文件
+### 第一步：准备前置凭据
+
+1. **申请 115 开放平台 AppID（强烈推荐）**
+   - 前往 [115 开放平台](https://open.115.com/) 创建应用，审核通过后获取 `115_app_id`。
+   - 填写 `115_app_id` 后即可在 Telegram 或 Web 端直接扫码授权，无需手动抓取/维护 Token。
+2. **创建 Telegram 机器人（如仅使用纯 Web/API 模式可跳过）**
+   - 在 Telegram 中通过 `@BotFather` 创建机器人获取 `bot_token`。
+   - 通过 `@getidsbot` 获取你的数字用户 ID，填入 `allowed_user`（支持单个 ID 或列表 `[123456, 789012]`）。
+
+---
+
+### 第二步：准备配置文件
+
 ```bash
 cp config/config.yaml.example config/config.yaml
 ```
-按需填写 `bot_token`、`allowed_user`、`115_app_id` 等字段：
-- 调试建议将 `log_level` 设为 `debug`（日志会同时输出到终端与 `config/115bot.log`）。
-- 如需大视频上传功能，注意字段名为 `bot_name`（不是 `bote_name`），并按下文“视频下载配置”生成 `config/user_session.session`。
-- 切勿提交 `config/config.yaml`、`config/115_tokens.json`、`config/*.db`、`app/images/qrcode.png`、`*.log` 等敏感/运行期文件（已加入 `.gitignore`）。
 
-### 3. 代理连通性自检（如服务器无法直连 Telegram）
-先用 3 秒快速确认本地代理（如 mihomo）可访问 Telegram Bot API：
+按需修改 `config/config.yaml` 中的关键配置：
+
+```yaml
+log_level: info
+
+# Telegram 基础配置（纯 Web 模式可留空）
+bot_token: "your_bot_token"
+allowed_user: [123456789]
+
+# 115 开放平台（推荐配置 115_app_id，之后直接扫码授权）
+115_app_id: "your_115_app_id"
+
+# 下载完成后自动清理小广告文件
+clean_policy:
+  switch: "on"
+  less_than: 400M
+
+# 短时间多条链接消息自动合并间隔（毫秒）
+msgs_merge_interval: 3000
+
+# 115 分类保存目录（首个目录或上次选择的目录会作为默认保存目录）
+category_folder:
+  - name: movies
+    display_name: 电影
+    path_map:
+      - name: 外语电影
+        path: /影视/电影/外语电影
+      - name: 华语电影
+        path: /影视/电影/华语电影
+
+# STRM 软链与 Emby（不需要生成 .strm 时建议设为 false，可大幅减少 API 请求）
+create_strm: false
+mount_root: /CloudNAS/115
+strm_root: /media/115
+emby_server: http://your_emby_server:8096
+api_key: your_emby_api_key
+
+# 交互与自动重试参数（控制面板 / Web 设置页的实时修改优先级高于此文件）
+retry_max_wait_hours: 24          # 自动重试最长等待上限：24 / 48 / 96 / 192 / 384（16天）
+auto_retry_enabled: false         # 自动重试机制开关（默认关闭）
+panel_refresh_debounce_sec: 3     # TG 底部控制面板防抖刷新间隔（秒）
+file_confirm_auto_timeout_sec: 30 # TG 多链接文件确认超时自动下载默认目录（秒，0 为关闭）
+
+# Web 控制台与 REST API 设置
+web:
+  enabled: true
+  host: "0.0.0.0"                 # 若仅通过本机 Nginx/1Panel 反代可改为 127.0.0.1
+  port: 8115
+  username: "admin"
+  password: "your_web_password"   # 留空则首次启动自动生成随机密码并输出在日志中
+  api_key: ""                     # 留空则首次启动自动生成，可在 Web 设置页查看/轮换
+  notify_tg_on_web_download: true # Web/API 下载完成后是否同步推送结果到 Telegram
+```
+
+> **安全提醒**：切勿提交或泄露 `config/config.yaml`、`config/115_tokens.json`、`config/*.db`、`config/user_session.session`、`app/images/qrcode.png`、`*.log` 等运行期敏感文件（已配置 `.gitignore` 忽略）。
+
+---
+
+### 第三步：部署与启动（三种方式任选）
+
+#### 方式 1：本地 / tmux 联合启动（推荐，TG Bot + Web + API 同进程）
+1. 准备 Python 3.12+ / 3.13 虚拟环境并安装依赖：
+   ```bash
+   python3 -m venv .venv
+   .venv/bin/pip install -r requirements.txt
+   ```
+   > 若使用 `uv`：`uv venv && uv pip install -r requirements.txt`。
+   > 若精简版 Debian 缺少 `ensurepip`：先 `python3 -m venv --without-pip .venv`，再用 `get-pip.py` 安装 `pip`。
+2. 如服务器无法直连 Telegram，设置代理并将 115 域名加入 `NO_PROXY` 走直连：
+   ```bash
+   export HTTP_PROXY="http://127.0.0.1:<代理端口>"
+   export HTTPS_PROXY="http://127.0.0.1:<代理端口>"
+   export NO_PROXY="localhost,127.0.0.1,::1,proapi.115.com,passportapi.115.com,qrcodeapi.115.com"
+   ```
+3. 启动服务：
+   ```bash
+   .venv/bin/python app/115bot.py
+   ```
+
+#### 方式 2：纯 Web + REST API 独立启动（无需 Telegram）
 ```bash
-curl -I --max-time 5 -x http://127.0.0.1:<代理端口> https://api.telegram.org
+.venv/bin/python app/web_server.py
 ```
-看到返回 HTTP 状态码即表示代理正常；可直连 Telegram 的机器可跳过代理配置。
 
-### 4. 前台启动调试
-项目启动时已自动将 `app`、`app/core`、`app/utils`、`app/handlers` 加入 `sys.path`，无需手动拼接 `PYTHONPATH`。建议将 115 域名加入 `NO_PROXY` 走直连：
+#### 方式 3：Docker Compose 一键部署
+1. 修改 [docker-compose.yaml](docker-compose.yaml) 中的挂载卷路径（`config/`、`tmp/`、`media/`、`CloudNAS/`）与代理环境变量（如需）。
+2. 本地构建并启动（[Dockerfile](Dockerfile) 采用多阶段构建，自动打包 React 前端与 Python 后端）：
+   ```bash
+   bash build.sh
+   docker compose up -d
+   ```
+
+---
+
+### 第四步：115 账号扫码授权
+
+启动后若尚未授权或 Token 已过期，程序不会崩溃退出，可通过任一端直接完成扫码授权：
+- **Telegram 端**：发送 `/auth`（或点击底部面板第 2 页「🔑 115 扫码授权」），用手机 115 App 扫码确认。
+- **Web 端**：访问 `http://<服务器IP>:8115` 登录，在「总览」页点击右上角 **「115 扫码授权」**，用 115 App 扫码确认，页面自动完成授权并刷新账号、配额与容量信息。
+
+---
+
+### 第五步：日常使用流程
+
+#### A. Telegram 端使用流程
+
+1. **打开控制面板**：发送 `/start` 或 `/menu`，常驻底部主控面板即出现（支持翻页查看全部功能）。
+2. **直接发送/转发链接**：
+   - 发送单条或多条 `magnet:` / `ed2k://` / `thunder://` / `.torrent` 链接（支持纯文本、图片配文、超链接实体，短时间多条消息自动合并）。
+   - 多链接文本的首行/尾行非链接文字会自动提取为 115 子文件夹名。
+   - 若已记住默认目录则自动提交；否则弹出目录选择按钮。
+3. **发送多格式链接文件**：
+   - 直接发送 `.txt` / `.csv` / `.html` / `.htm` / `.xlsx` / `.xlsm` / `.xls` / `.torrent` 文件（无 500KB 限制）。
+   - 仅含 1 条链接时直接提交；超过 1 条链接时，机器人先回复 `原文件名+数量V+时间.txt` 清单供核对：
+     - **✅ 确认下载至默认文件夹**：一键开始下载到默认目录；
+     - **📂 确认并下载至其他文件夹**：弹出该文件专属的分类目录选择器（连发多个文件并发确认互不干扰）；
+     - **⏸ 取消30秒自动倒计时**：停止 30 秒自动下载倒计时，保留任务与手动按钮；
+     - **❌ 取消下载**：放弃本次提交。
+4. **队列追踪、云端清理与自动重试**：
+   - **📥 任务队列（`/tasks`）**：按状态筛选，点击任务按钮查看逐条磁力明细、第 N 次尝试、下次重试时间，可手动 **🔄 立即重试** 或删除记录。
+   - **☁️ 115云端任务（`/cloud_tasks`）**：分页浏览 115 官方任务，支持单条删除（仅删记录 / 含源文件）与批量清空。
+   - **🔁 自动重试开关（面板第 2 页）**：默认关闭，点击开启后自动推送完整使用说明；可在 **⏱ 重试上限** 调整最长等待时长。
+
+**Telegram 常用命令速查：**
+
+| 命令 | 说明 |
+|---|---|
+| `/start`、`/menu` | 打开并置底主控面板 |
+| `/status` | 查看 115 账号、VIP、离线配额与重置倒计时、网盘容量及下载目录 |
+| `/tasks` | 打开统一任务队列与逐条磁力明细 |
+| `/rl` | 直接打开任务队列「待重试」筛选视图 |
+| `/cloud_tasks` | 管理 115 官方云端离线任务 |
+| `/log` | 导出并发送最新运行日志文件（`115bot.log`） |
+| `/minimal` | 切换对话极简模式 |
+| `/reset_save_path` | 重置已记住的默认保存目录 |
+| `/auth` | 115 开放平台扫码授权 |
+| `/reload` | 热重载 `config/config.yaml` 配置 |
+| `/av <番号>` | 自动检索番号磁力并提交离线下载 |
+| `/sync` | 同步指定目录并创建 `.strm` 软链（⚠️ 见下方警告） |
+| `/help` | 查看完整命令与操作说明 |
+| `/q` | 取消当前交互会话 |
+
+---
+
+#### B. Web 控制台使用流程（手机端 & 桌面端）
+
+1. **打开与安装 PWA**：
+   - 浏览器访问 `http://<服务器IP>:8115`（公网访问建议通过 1Panel / Nginx 反代配置 HTTPS）。
+   - 手机端（iOS Safari / Android Chrome）可点击「添加到主屏幕」，以独立 App 形态运行并自动适配底部 5-Tab 导航栏与安全区。
+   - 使用 `config.yaml` 中配置的 `web.username` / `web.password` 登录（未配置密码时从首次启动日志中获取随机初始密码）。
+2. **总览页**：查看 115 账号/VIP、离线配额进度条与重置倒计时、网盘剩余空间、已配置目录，支持弹窗扫码授权。
+3. **下载页**：
+   - 拖拽或点选上传 `.txt / .csv / .html / .htm / Excel / .torrent` 文件 → 系统解析后呈现**可勾选预览清单**，自由勾选所需链接；
+   - 或在文本框粘贴链接/批量文本（可点「先识别预览」核对或直接提交）；
+   - 选择保存目录（默认预选记忆目录）、填写可选子文件夹名、勾选「完成后同步推送汇总到 Telegram」→ 点击 **「开始下载」** 即入队并跳转队列页。
+4. **队列页（SSE 实时同步）**：
+   - 自动实时更新进度与状态，按 5 种状态筛选；
+   - 点击卡片查看逐条磁力明细（手机端为底部抽屉），支持只看未完成、手动立即重试、删除记录与清空已完成/已失败记录。
+5. **云端页**：分页管理 115 官方离线任务，支持单删（仅删记录 / 含源文件）与一键清空已完成 / 失败 / 全部记录。
+6. **设置页**：
+   - 切换**自动重试开关**（开启时直接展示完整使用说明）与最长等待上限；
+   - 开关 **Web/API 下载完成同步通知 TG**、重置默认目录、热重载配置；
+   - 查看/复制/重新生成 **API Key**、修改 Web 登录账号密码；
+   - 内置 **实时运行日志终端（SSE）** 与一键下载完整 `115bot.log`。
+
+---
+
+#### C. 外部 REST API 调用流程
+
+- **Swagger 交互文档**：`http://<服务器IP>:8115/docs`（OpenAPI JSON 位于 `/openapi.json`）。
+- **鉴权方式**：请求头传入 `X-API-Key: <API_KEY>` 或 `Authorization: Bearer <API_KEY>`（在 Web「设置」页一键复制，支持随时重置）。
+
+**核心 API 端点一览：**
+
+| 方法与路径 | 用途 |
+|---|---|
+| `GET /api/v1/health` | 健康检查（免鉴权） |
+| `GET /api/v1/status` | 获取 115 账号、配额、容量、目录与系统状态 |
+| `POST /api/v1/115/qr/start` / `GET /api/v1/115/qr/{id}` | 启动与轮询 115 PKCE 扫码授权 |
+| `POST /api/v1/files/parse` | 上传多格式链接文件，仅解析返回链接清单（不提交） |
+| `POST /api/v1/files/submit` | 上传多格式链接文件，解析并直接入队下载 |
+| `POST /api/v1/downloads/parse-text` | 解析原始文本中的链接与建议文件夹名 |
+| `POST /api/v1/downloads/submit` | 提交链接列表或原始文本离线下载（返回 `tracker_id`） |
+| `GET /api/v1/tasks` | 查询统一任务队列（支持 `filter=all\|run\|retry\|done\|fail`） |
+| `GET /api/v1/tasks/live/{task_id}` | 查询进行中/近期任务的实时逐条进度 |
+| `GET /api/v1/tasks/groups/{group_id}` | 查询持久化任务组明细与分页 |
+| `POST /api/v1/tasks/groups/{group_id}/retry` | 手动立即重试指定任务组的失败项 |
+| `DELETE /api/v1/tasks/groups/{group_id}` | 删除任务组记录（不删网盘文件） |
+| `GET /api/v1/cloud/tasks?page=1` | 分页获取 115 官方云端离线任务 |
+| `DELETE /api/v1/cloud/tasks/{info_hash}?delete_source=false` | 删除单条 115 云端任务（可选同时删源文件） |
+| `POST /api/v1/cloud/tasks/clear` | 批量清空云端任务（`flag`: `1`全部 / `2`失败 / `4`已完成） |
+| `GET/PATCH /api/v1/settings` | 读取与修改自动重试开关、上限、TG 通知与默认目录 |
+| `GET /api/v1/logs` / `GET /api/v1/logs/download` | 获取最近日志或下载完整 `115bot.log` |
+| `GET /api/v1/events/stream` / `GET /api/v1/logs/stream` | SSE 实时任务进度流与实时日志流（支持 `?api_key=`） |
+
+**快速调用示例（`curl`）：**
+
 ```bash
-export HTTP_PROXY="http://127.0.0.1:<代理端口>"
-export HTTPS_PROXY="http://127.0.0.1:<代理端口>"
-export NO_PROXY="localhost,127.0.0.1,::1,proapi.115.com,passportapi.115.com,qrcodeapi.115.com"
+# 1. 查询账号状态与剩余配额
+curl -H "X-API-Key: <YOUR_API_KEY>" \
+  "http://127.0.0.1:8115/api/v1/status"
 
-.venv/bin/python app/115bot.py
-```
-按 `Ctrl+C` 即可随时停止。
+# 2. 提交磁力/ed2k 链接到默认目录（可选关闭 TG 通知）
+curl -X POST "http://127.0.0.1:8115/api/v1/downloads/submit" \
+  -H "X-API-Key: <YOUR_API_KEY>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "links": ["magnet:?xt=urn:btih:..."],
+    "custom_folder_name": "合集名称",
+    "notify_tg": true
+  }'
 
-### 5. 启动验收与 Telegram 实测
-观察终端日志依次出现以下信息即说明启动正常：
-1. `✅ Auth处理器已注册` 等全部 9 个处理器注册完成
-2. `Scheduler started`（定时任务调度器启动）
-3. `Bot菜单命令已设置!`（Telegram Bot API 连通正常，无 `Timed out`）
+# 3. 上传多格式文件并直接提交下载（支持 .txt/.csv/.html/.htm/.xlsx/.xls/.torrent）
+curl -X POST "http://127.0.0.1:8115/api/v1/files/submit" \
+  -H "X-API-Key: <YOUR_API_KEY>" \
+  -F "file=@/path/to/links.xlsx" \
+  -F "notify_tg=true"
 
-随后在 Telegram 中向机器人发送命令验证：
-- 发送 `/start`：确认能正常收到使用手册回复；
-- 若日志提示 115 Token 过期或授权已解除（如 `40140116`），机器人会自动降级保持在线，直接发送 `/auth` 接收二维码并用 115 App 扫码完成重新授权，重启后即可正常显示空间与配额欢迎消息。
-
-### 6. 日志追踪、断点调试与单元测试
-- **实时查看日志文件**：另开终端执行 `tail -f config/115bot.log`。
-- **终端断点调试**：在目标代码行插入 `breakpoint()`，前台运行 `.venv/bin/python app/115bot.py` 即可进入交互式 `pdb`。
-- **VS Code / code-server 调试**：将 Python 解释器选为 `.venv/bin/python`，直接调试 `app/115bot.py` 并在 `launch.json` 的 `env` 中配置上述代理变量。
-- **运行本地单元测试**（无需真实凭证与网络）：
-  ```bash
-  .venv/bin/python -m compileall -q app
-  .venv/bin/python test_startup_token_handling.py
-  .venv/bin/python test_rate_limiter_simple.py
-  .venv/bin/python test_folder_extraction.py
-  ```
-
----------------------
-# 以下为原 版本的README 说明 
-<div align="center">
-    <h1>115Bot - Telegram 机器人</h1>
-    <p>简体中文 | <a href="./README_EN.md">[English]</a> </p>
-</div>
-
-一个基于 Python 的 Telegram 机器人，用于管理和控制 115 网盘，支持离线下载、视频上传、目录同步等功能。
-
-## Tg讨论群
-
-使用问题 & Bug反馈
-
-[加入](https://t.me/+FTPNla_7SCc3ZWVl)
-
-## 部署&使用
-
-📖[部署&使用](https://github.com/qiqiandfei/Telegram-115bot/wiki)
-
-
-### 目录结构
-```
-.
-├── app
-│   ├── 115bot.py                 # 程序入口脚本
-│   ├── config.yaml.example       # 配置文件模板
-│   ├── core                      # 核心功能
-│   ├── handlers                  # Telegram handlers
-│   ├── images                    # 图片
-│   ├── init.py                   # 初始化脚本
-│   └── utils                     # 有用的工具
-├── build.sh                      # 本地构建脚本
-├── config                        # 配置目录
-├── create_tg_session_file.py     # 创建tg_session脚本
-├── docker-compose.yaml           # docker-compose
-├── Dockerfile                    
-├── Dockerfile.base
-├── legacy                        # 历史遗留
-├── LICENSE
-├── README_EN.md
-├── README.md
-├── requirements.txt              # 项目依赖
+# 4. 查询待重试队列
+curl -H "X-API-Key: <YOUR_API_KEY>" \
+  "http://127.0.0.1:8115/api/v1/tasks?filter=retry"
 ```
 
-## 使用指南
+---
 
-### 基本命令
+## 进阶配置说明
 
-- `/start`   - 显示帮助信息
-- `/auth`    - 115 授权设置
-- `reload`   - 重载配置
-- `/dl`      - 添加离线下载
-- `/rl`      - 重试列表
-- `/av`      - 番号下载
-- `/sm`      - 订阅电影
-- `/sync`    - 同步目录并创建软链
-- `/q`       - 取消当前会话
+### 1. Telegram 大视频转存（>20MB）
+Telegram Bot API 限制机器人只能直接下载 20MB 以内的文件；如需转发大于 20MB 的视频到 115 网盘，请配置 Telethon 用户客户端：
+1. 在 [Telegram Development Platform](https://my.telegram.org/auth) 申请 `tg_api_id` 与 `tg_api_hash`。
+2. 在 `config/config.yaml` 中填写 `bot_name`（注意字段名是 `bot_name`）、`tg_api_id`、`tg_api_hash`。
+3. 在 `create_tg_session_file.py` 中填入 `API_ID` 与 `API_HASH` 后执行：
+   ```bash
+   .venv/bin/python create_tg_session_file.py
+   ```
+   按提示输入手机号与验证码，将生成的 `user_session.session` 放入 `config/` 目录即可。
+> 不配置此步骤完全不影响离线下载、Web 端与 REST API 的正常使用。
 
-### 115 开放平台申请
+### 2. 重要安全提醒
+- ⚠️ **目录同步警告**：`/sync` 命令会**删除目标目录下的所有原有文件**（包括元数据），大规模同步亦可能触发 115 风控，请务必核对路径后谨慎使用。
+- ⚠️ **公网暴露 Web 端**：建议在 `config.yaml` 中设置高强度 `web.password`，并通过 1Panel / Nginx 反向代理启用 HTTPS。
 
-**强烈建议申请 115 开放平台以获得更好的使用体验！**
-- 申请地址：[115开放平台](https://open.115.com/)
-- 审核通过后将 `115_app_id` 填入配置文件中
+---
 
-如不想使用 115 开放平台，请使用之前的镜像版本 `qiqiandfei/115-bot:v2.3.7`
+## 本地开发、前端重打包与测试
 
-### 视频下载配置
-
-由于 Telegram Bot API 限制，无法下载超过 20MB 的视频文件。如需下载大视频，请配置 Telegram 客户端：
-
-#### 配置方法
-Telegram API申请地址：[Telegram Development Platform](https://my.telegram.org/auth)
-
-申请成功后可以获取到tg_api_id和tg_api_hash
-
-确保配置文件中以下三个参数配置正确：
-```
-# bot_name
-bot_name: "@yourbotname"
-
-# telegram 的api信息
-tg_api_id: 1122334
-tg_api_hash: 1yh3j4k9dsk0fj3jdufnwrhf62j1k33f
-```
-**生成 user_session的方法**
-1. 修改create_tg_session_file.py中的 API_ID 和 API_HASH
-2. 运行脚本：python create_tg_session_file.py
-3. 按照提示输入手机号和验证码
-4. 将生成的 user_session.session 文件放到 config 目录
-
-> **注意**：如果不配置此步骤，机器人仍可正常运行，只是无法处理超过 20MB 的视频文件。
-
-### 重要提醒
-
-⚠️ **同步功能警告**：`/sync` 命令会**删除目标目录下的所有文件**，包括元数据。大规模同步操作可能触发 115 网盘风控机制，请谨慎使用！
-
-## 许可证
-```
-MIT License
-
-Copyright (c) 2025 qiqiandfei
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+### 1. 前端重新构建（仅修改 `web-frontend/` 源码时需要）
+仓库已包含编译好的静态文件于 `app/web/static/`，直接启动 Python 即可使用。修改前端后可通过 Docker 临时 Node 容器重新构建（无需宿主机安装 Node.js）：
+```bash
+docker run --rm -v "$(pwd)/web-frontend:/work" -w /work node:22-alpine \
+  sh -c "npm install --no-audit --no-fund && npm run build"
+rm -rf app/web/static && mkdir -p app/web/static && cp -r web-frontend/dist/. app/web/static/
 ```
 
-## 免责声明
-本项目仅供学习和研究使用，请遵守相关法律法规，不得用于商业用途。使用者需自行承担使用风险！
+### 2. 运行全套单元测试（无需真实凭证与网络）
+```bash
+.venv/bin/python -m compileall -q app
+.venv/bin/python test_web_api.py
+.venv/bin/python test_file_link_parser_and_confirm.py
+.venv/bin/python test_batch_api_optimization.py
+.venv/bin/python test_runtime_bugfixes.py
+.venv/bin/python test_adaptive_polling_and_dedup.py
+.venv/bin/python test_panel_and_reactions.py
+.venv/bin/python test_startup_token_handling.py
+.venv/bin/python test_txt_handler.py
+.venv/bin/python test_unified_link_extraction.py
+```
 
-如果这个项目对您有帮助，请献上一个⭐！
+---
 
-## Buy me a coffee~
-![请我喝咖啡](https://alist.qiqiandfei.fun:8843/d/Syncthing/yufei/%E4%B8%AA%E4%BA%BA/%E8%B5%9E%E8%B5%8F.png)
+## 许可证与免责声明
+
+本项目基于 [MIT License](LICENSE) 开源，仅供个人学习与技术研究使用，请遵守相关法律法规与网盘服务条款，使用者需自行承担使用风险。

@@ -1383,7 +1383,15 @@ def process_failed_download(link, selected_path, user_id, resource_name, task_in
         add_task_to_queue(user_id, None, message=message, keyboard=reply_markup)
 
 
-def download_tasks_batch(links, selected_path, user_id, custom_folder_name="", reaction_targets=None):
+def download_tasks_batch(
+    links,
+    selected_path,
+    user_id,
+    custom_folder_name="",
+    reaction_targets=None,
+    notify_tg: bool = True,
+    tracker_id: str = None,
+):
     """批量下载任务处理（减少API调用频率，实时更新磁力明细并在完成时引用原消息通知）"""
     import uuid
     from telegram.helpers import escape_markdown
@@ -1391,7 +1399,7 @@ def download_tasks_batch(links, selected_path, user_id, custom_folder_name="", r
 
     total_count = len(links)
     init.logger.info(f"开始批量处理 {total_count} 个下载任务")
-    tracker_id = f"dl_{uuid.uuid4().hex[:8]}"
+    tracker_id = tracker_id or f"dl_{uuid.uuid4().hex[:8]}"
     task_title = custom_folder_name or (f"批量下载({total_count}个)" if total_count > 1 else "单链接离线下载")
 
     origin_chat_id = user_id
@@ -1426,19 +1434,21 @@ def download_tasks_batch(links, selected_path, user_id, custom_folder_name="", r
             custom_folder_name,
             tracker_id=tracker_id,
             origin_message_id=origin_message_id,
+            notify_tg=notify_tg,
         )
         succeeded = True
         finish_task(tracker_id, status="completed", note="已完成")
     except Exception as e:
         init.logger.error(f"批量下载任务执行失败: {e}", exc_info=True)
         finish_task(tracker_id, status="failed", note=str(e)[:40])
-        err_msg = escape_markdown(f"❌ 批量下载任务执行失败: {str(e)}\n请查看日志获取详细信息", version=2)
-        add_task_to_queue(
-            user_id,
-            f"{init.IMAGE_PATH}/male023.png",
-            message=err_msg,
-            reply_to_message_id=origin_message_id,
-        )
+        if notify_tg and user_id:
+            err_msg = escape_markdown(f"❌ 批量下载任务执行失败: {str(e)}\n请查看日志获取详细信息", version=2)
+            add_task_to_queue(
+                user_id,
+                f"{init.IMAGE_PATH}/male023.png",
+                message=err_msg,
+                reply_to_message_id=origin_message_id,
+            )
     finally:
         # 对话内跟踪结束后仍未出结果（提交失败/查询异常）的项转入后台自动重试
         try:
@@ -1453,7 +1463,15 @@ def download_tasks_batch(links, selected_path, user_id, custom_folder_name="", r
             schedule_reactions_batch(reaction_targets, REACTION_DONE if succeeded else REACTION_ERROR)
 
 
-def _download_tasks_batch_impl(links, selected_path, user_id, custom_folder_name="", tracker_id=None, origin_message_id=None):
+def _download_tasks_batch_impl(
+    links,
+    selected_path,
+    user_id,
+    custom_folder_name="",
+    tracker_id=None,
+    origin_message_id=None,
+    notify_tg: bool = True,
+):
     """批量下载任务的实际实现（内部函数）"""
     from app.utils.message_queue import add_task_to_queue
     from app.core.batch_task_manager import (
@@ -1563,8 +1581,9 @@ def _download_tasks_batch_impl(links, selected_path, user_id, custom_folder_name
                 init.logger.info(f"批量提交完成：共 {success_count}/{total_count} 个任务提交成功")
             else:
                 # 所有批次都失败，通知用户
-                error_message = f"❌ 批量提交 {total_count} 个离线任务全部失败！"
-                add_task_to_queue(user_id, f"{init.IMAGE_PATH}/male023.png", message=error_message)
+                if notify_tg and user_id:
+                    error_message = f"❌ 批量提交 {total_count} 个离线任务全部失败！"
+                    add_task_to_queue(user_id, f"{init.IMAGE_PATH}/male023.png", message=error_message)
                 init.logger.warn(f"所有批次提交失败")
 
         except Exception as e:
@@ -1578,8 +1597,9 @@ def _download_tasks_batch_impl(links, selected_path, user_id, custom_folder_name
                         "index": i,
                         "submitted": False
                     })
-            error_message = f"❌ 批量提交异常: {str(e)}"
-            add_task_to_queue(user_id, f"{init.IMAGE_PATH}/male023.png", message=error_message)
+            if notify_tg and user_id:
+                error_message = f"❌ 批量提交异常: {str(e)}"
+                add_task_to_queue(user_id, f"{init.IMAGE_PATH}/male023.png", message=error_message)
 
     else:
         # 原方案：循环逐个提交（保留以便回滚）
@@ -1671,12 +1691,13 @@ def _download_tasks_batch_impl(links, selected_path, user_id, custom_folder_name
         if offline_task_status is None:
             init.logger.error("无法获取离线任务状态")
             if poll_round == 1:  # 第一次就失败才报错
-                add_task_to_queue(
-                    user_id,
-                    f"{init.IMAGE_PATH}/male023.png",
-                    message="❌ 无法获取离线任务状态，请稍后手动检查",
-                    reply_to_message_id=origin_message_id,
-                )
+                if notify_tg and user_id:
+                    add_task_to_queue(
+                        user_id,
+                        f"{init.IMAGE_PATH}/male023.png",
+                        message="❌ 无法获取离线任务状态，请稍后手动检查",
+                        reply_to_message_id=origin_message_id,
+                    )
                 return
             else:
                 break
@@ -1950,7 +1971,7 @@ def _download_tasks_batch_impl(links, selected_path, user_id, custom_folder_name
     stall_hint = "（部分任务连续10分钟无进度已转后台自动重试）" if early_stopped_stalled else ""
 
     sent_merged_error_doc = False
-    if failed_count > 5:
+    if notify_tg and user_id and failed_count > 5:
         error_log_path = None
         try:
             error_log_path = generate_error_log_file(task_results, total_count, custom_folder_name, batch_group_id)
@@ -1997,7 +2018,7 @@ def _download_tasks_batch_impl(links, selected_path, user_id, custom_folder_name
                 except Exception:
                     pass
 
-    if not sent_merged_error_doc:
+    if notify_tg and user_id and not sent_merged_error_doc:
         safe_folder = escape_markdown(str(custom_folder_name or final_folder_name or ""), version=2)
         safe_path = escape_markdown(str(actual_download_path or selected_path or ""), version=2)
 

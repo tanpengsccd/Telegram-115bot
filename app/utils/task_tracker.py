@@ -169,6 +169,13 @@ def is_fallback_retry_name(name: Optional[str]) -> bool:
 _lock = threading.Lock()
 _active_tasks: Dict[str, Dict] = {}
 _recent_tasks = deque(maxlen=15)
+_version: int = 0
+
+
+def get_tracker_version() -> int:
+    """Return monotonic version counter incremented whenever tracked tasks change (used by Web SSE)."""
+    with _lock:
+        return _version
 
 
 def extract_display_name_from_link(link: str, fallback: str = "") -> str:
@@ -246,19 +253,23 @@ def register_task(
         "started_at": now,
         "updated_at": now,
     }
+    global _version
     with _lock:
         _active_tasks[task_id] = entry
+        _version += 1
     return copy.deepcopy(entry)
 
 
 def update_task(task_id: str, **fields) -> Optional[Dict]:
     """Update top-level progress fields of an active task."""
+    global _version
     with _lock:
         entry = _active_tasks.get(task_id)
         if not entry:
             return None
         entry.update(fields)
         entry["updated_at"] = time.time()
+        _version += 1
         return copy.deepcopy(entry)
 
 
@@ -272,6 +283,7 @@ def update_task_item(
     error: Optional[str] = None,
 ) -> Optional[Dict]:
     """Update an individual magnet/file item inside a tracked task and sync aggregate counts."""
+    global _version
     with _lock:
         entry = _active_tasks.get(task_id)
         if not entry:
@@ -302,11 +314,13 @@ def update_task_item(
         entry["completed"] = sum(1 for it in items if it.get("status") == "success")
         entry["failed"] = sum(1 for it in items if it.get("status") == "failed")
         entry["updated_at"] = time.time()
+        _version += 1
         return copy.deepcopy(target)
 
 
 def finish_task(task_id: str, status: str = "completed", note: str = "") -> Optional[Dict]:
     """Mark an active task finished and move it into recent history (preserving item details)."""
+    global _version
     with _lock:
         entry = _active_tasks.pop(task_id, None)
         if not entry:
@@ -316,6 +330,7 @@ def finish_task(task_id: str, status: str = "completed", note: str = "") -> Opti
         entry["finished_at"] = time.time()
         entry["updated_at"] = entry["finished_at"]
         _recent_tasks.appendleft(entry)
+        _version += 1
         return copy.deepcopy(entry)
 
 
@@ -354,6 +369,8 @@ def list_queue_tasks(limit: int = 10) -> List[Dict]:
 
 def clear_tasks() -> None:
     """Reset tracker state (useful for unit tests)."""
+    global _version
     with _lock:
         _active_tasks.clear()
         _recent_tasks.clear()
+        _version += 1

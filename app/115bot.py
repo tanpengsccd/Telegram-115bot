@@ -285,6 +285,12 @@ if __name__ == '__main__':
         # 启动定时任务线程
         start_scheduler_in_thread()
         init.logger.info("定时任务线程启动成功！")
+        # 同进程启动 Web UI & REST API 服务（当 web.enabled=true 时）
+        try:
+            from app.web.app import start_web_server_in_thread
+            start_web_server_in_thread()
+        except Exception as web_err:
+            init.logger.error(f"启动 Web/API 服务失败（不影响 TG Bot 运行）: {web_err}")
         time.sleep(3)  # 等待定时任务线程启动
         if is_115_ready:
             send_start_message()

@@ -1,0 +1,17 @@
+{
+  "name": "Telegram-115Bot 控制台",
+  "short_name": "115Bot",
+  "description": "115 网盘离线下载、任务队列与云端任务控制台",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#4f46e5",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

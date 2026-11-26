@@ -11,6 +11,8 @@ services:
     image: qiqiandfei/115-bot:latest
     # privileged: True
     restart: unless-stopped
+    ports:
+      - "8115:8115" # Web 控制台与 REST API 端口
     volumes:
       - /to/your/path/config:/config  # 配置目录
       - /to/your/path/tmp:/tmp        # 临时目录

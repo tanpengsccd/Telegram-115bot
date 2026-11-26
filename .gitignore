@@ -44,6 +44,10 @@ tmp/
 images/qrcode.png
 
 
+# Frontend
+web-frontend/node_modules/
+web-frontend/dist/
+
 # OS specific
 .DS_Store
 Thumbs.db
